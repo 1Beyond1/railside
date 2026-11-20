@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>走行部侧面巡检 · railside</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="9" width="28" height="12" rx="2"/><circle cx="9" cy="24" r="3"/><circle cx="23" cy="24" r="3"/><path d="M2 15h28"/></svg>
+    <div class="brand-text"><b>走行部侧面巡检</b><small>线阵侧面图像 · 两趟比对</small></div>
+  </div>
+  <div class="trip-switch" id="tripSwitch" role="tablist" aria-label="趟次"></div>
+  <div class="status-strip" id="statusStrip"></div>
+</header>
+
+<main class="layout">
+  <section class="stage">
+    <div class="carbar-wrap">
+      <div class="carbar-ends"><span>← 车尾</span><span id="carbarTitle" class="carbar-title"></span><span>车头 →</span></div>
+      <div class="carbar" id="carbar" title="点击跳转；点车厢编号跳到该节车（键盘 1–6）">
+        <img id="carbarImg" alt="">
+        <div class="carbar-cars" id="carbarCars"></div>
+        <div class="carbar-ticks" id="carbarTicks"></div>
+        <div class="carbar-view" id="carbarView"></div>
+      </div>
+    </div>
+
+    <div class="viewer-wrap">
+      <div id="viewer"></div>
+      <div class="viewer-empty" id="viewerEmpty" hidden></div>
+
+      <div class="tool-col" role="toolbar" aria-label="视图">
+        <button id="btnZoomIn" title="放大">
+          <svg viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button>
+        <button id="btnZoomOut" title="缩小">
+          <svg viewBox="0 0 20 20"><path d="M4 10h12"/></svg></button>
+        <button id="btnFitH" title="适应高度（H）">
+          <svg viewBox="0 0 20 20"><path d="M10 3v14M7 6l3-3 3 3M7 14l3 3 3-3"/></svg></button>
+        <button id="btnHome" title="整列（0）">
+          <svg viewBox="0 0 20 20"><rect x="2" y="7" width="16" height="6" rx="1"/><path d="M5 10h10"/></svg></button>
+        <button id="btnFull" title="全屏">
+          <svg viewBox="0 0 20 20"><path d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/></svg></button>
+      </div>
+
+      <div class="layer-ctrl" id="layerCtrl">
+        <span class="layer-title">叠加</span>
+        <label class="lchip" data-k="ok"><input type="checkbox" checked><i class="sw st-ok"></i>正常 <em id="cntOk">0</em></label>
+        <label class="lchip" data-k="alarm"><input type="checkbox" checked><i class="sw st-alarm"></i>告警 <em id="cntAlarm">0</em></label>
+        <label class="lchip" data-k="missing"><input type="checkbox" checked><i class="sw st-missing"></i>缺失 <em id="cntMissing">0</em></label>
+        <label class="lchip" data-k="anchor"><input type="checkbox"><i class="sw st-anchor"></i>定位靶 <em id="cntAnchor">0</em></label>
+      </div>
+      <div class="overlay-note" id="overlayNote" hidden></div>
+
+      <div class="readout" id="readout"></div>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <nav class="side-tabs" role="tablist">
+      <button data-tab="alarms" class="on">告警<span class="badge" id="alarmBadge"></span></button>
+      <button data-tab="summary">质检与对齐</button>
+      <button data-tab="process">处理新趟</button>
+      <button data-tab="chat">智能体</button>
+    </nav>
+
+    <div class="side-body">
+      <section class="pane on" id="pane-alarms">
+        <div class="filters" id="alarmFilters"></div>
+        <div class="list" id="alarmList"></div>
+      </section>
+
+      <section class="pane" id="pane-summary"><div id="summaryBody"></div></section>
+
+      <section class="pane" id="pane-process">
+        <form class="form" id="runForm" autocomplete="off">
+          <div class="form-head">从原图目录跑完整条流水线（<code>railside run</code>）：质检 → 拼接 → 对齐 → 识别 → 对比 → 报告。</div>
+          <label>原图目录<input name="src" placeholder="如 D:\数据\ZXB_LC05D（3）\camImg" required></label>
+          <label>趟次号<input name="trip" placeholder="如 T03" pattern="[A-Za-z0-9_\-]{1,32}" required></label>
+          <label>模板版本<input name="template" value="" placeholder="默认最新" pattern="[A-Za-z0-9_\-]{1,32}"></label>
+          <label>分割模型权重（可选）<input name="weights" placeholder=".pt 文件路径；留空使用模板匹配"></label>
+          <div class="form-row"><button type="submit" class="primary">开始处理</button><span class="form-msg" id="runMsg"></span></div>
+        </form>
+        <div class="sec-title">任务</div>
+        <div id="jobList"></div>
+      </section>
+
+      <section class="pane chat" id="pane-chat">
+        <div class="chat-log" id="chatLog"></div>
+        <form class="chat-input" id="chatForm">
+          <textarea id="chatText" rows="2" placeholder="问智能体，如：这趟有哪些告警？哪节车最需要复查？（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button type="submit" class="primary" id="chatSend">发送</button>
+        </form>
+      </section>
+    </div>
+
+    <section class="detail" id="detail" hidden>
+      <header class="detail-head">
+        <button class="back" id="detailClose" title="关闭（Esc）">
+          <svg viewBox="0 0 20 20"><path d="M12 4l-6 6 6 6"/></svg></button>
+        <div class="detail-title"><span id="dCode" class="mono"></span><span id="dStatus" class="pill"></span></div>
+        <button class="ghost" id="dLocate" title="在长图中定位">定位</button>
+      </header>
+      <div class="detail-body" id="detailBody"></div>
+    </section>
+  </aside>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
+
