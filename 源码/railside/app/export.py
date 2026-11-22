@@ -115,7 +115,7 @@ def export(out, trips=None, max_level=None, log=None):
         '双击 index.html，用浏览器（Edge、Chrome、Firefox）打开即可，不用安装任何东西、不用联网。\n'
         '这是离线浏览包（只读）：整列长图、零件框、零件详情（模板与本趟局部图并排）、告警、质检与对齐。\n'
         '长图是半分辨率；零件细节点零件框，看详情里的原分辨率局部图。\n'
-        '处理新趟、智能体对话要用完整应用：代码包里双击“启动应用.cmd”。\n', encoding='utf-8')
+        '处理新趟、智能体对话要用完整应用：在项目根目录运行 uv run railside app。\n', encoding='utf-8')
     size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
     return {'step': 'app export', 'out': str(out), 'trips': names, 'tiles': n_tiles, 'crops': n_crops,
             'size_mb': round(size / 2 ** 20, 1)}

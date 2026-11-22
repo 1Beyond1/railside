@@ -2,7 +2,9 @@
 
 # railside: Side-View Visual Inspection for Metro Trains
 
-`railside` processes raw side-view line-scan camera frames of passing metro trains to produce full-train stitched imagery, a coded part inventory, and per-part comparison alarms against a reference template train, along with a local web viewer and agent/MCP tooling.
+[![CI](https://github.com/1Beyond1/railside/actions/workflows/ci.yml/badge.svg)](https://github.com/1Beyond1/railside/actions/workflows/ci.yml)
+
+`railside` processes raw side-view line-scan camera frames of passing metro trains to produce full-train stitched imagery, a coded part inventory, and per-part comparison alarms against a reference template train, along with a synchronized dual-pane web viewer and agent/MCP tooling.
 
 ## Pipeline
 
@@ -20,16 +22,18 @@
 | Comparison | `railside compare` | Detects missing parts, displacement, rotation, occlusion, and foreign-object alarms |
 | Report | `railside report` | Generates a standalone per-trip HTML report (`index.html` + part crops) |
 | End-to-end run | `railside run <raw-dir> --trip <trip-id>` | Runs the full pipeline from raw frames to database and HTML report |
-| Web viewer | `railside app` | Local web UI for full-train DZI deep-zoom browsing, part details, and trip comparison (supports `--export` for read-only offline bundles) |
+| Web viewer | `railside app` | Dual-pane synchronized inspection vs. template viewer, live synced crosshair, curtain/diff modal, dashboard, and printable reports (`--export` for offline bundles) |
+| Synthetic demo | `railside demo` | Generates a 100% synthetic, privacy-free 3-car dataset (template + inspection trip + 4 alarm types) in seconds |
 | Agent & MCP | `railside agent` / `mcp` | Exposes inspection queries, alarms, and pipeline runs as agent tools over MCP (stdio) |
 
-## Installation
+## Installation & Quickstart
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync
-uv run railside --help
+uv sync --no-group dl
+uv run railside demo      # No real data needed: generates synthetic demo & runs full pipeline
+uv run railside app       # Launch local web viewer with dual-pane template comparison
 uv run pytest 源码/tests
 ```
 

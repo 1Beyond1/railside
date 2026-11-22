@@ -28,7 +28,7 @@ import numpy as np
 
 from .. import io
 from ..template import load_types
-from .frameset import FrameCopy
+from .frameset import FrameCopy, default_raw_src
 
 SEED = 20261118
 SPACING = 1500
@@ -43,12 +43,12 @@ PLAN = [  # (类型, 允许的零件类型, 每处参数)
 CHILD_MIN_SCORE = 0.8
 
 
-def default_paths():
+def default_paths(trip='T02'):
     return {
-        'src': io.ROOT / '数据/原始/两次数据/ZXB_LC05D（2）/camImg',
-        'parts': io.MID / 'T02' / 'parts.json',
-        'compare': io.MID / 'T02' / 'compare.json',
-        'out': io.MID / '评测' / 'T02_synth' / 'camImg',
+        'src': default_raw_src(trip),
+        'parts': io.MID / trip / 'parts.json',
+        'compare': io.MID / trip / 'compare.json',
+        'out': io.MID / '评测' / f'{trip}_synth' / 'camImg',
         'truth': io.ROOT / '标注' / '评测' / '合成缺陷.json',
     }
 
@@ -162,12 +162,12 @@ def make_rotate(fc, p, prm, rng):
     return bbox, {'deg': deg, 'center_xy': [round(float(c[0]), 1), round(float(c[1]), 1)]}
 
 
-def make_shift(fc, p, prm, rng, types):
+def make_shift(fc, p, prm, rng, types, sx=SX, sy=SY):
     lim = float(types.get(p['type'], {}).get('shift_mm_max') or 5)
     mm = prm['k'] * lim
-    ang = rng.uniform(0, 2 * np.pi)
+    ang = prm['angle'] if 'angle' in prm else rng.uniform(0, 2 * np.pi)
     dx_mm, dy_mm = mm * np.cos(ang), mm * np.sin(ang)
-    dx, dy = dx_mm / SX, dy_mm / SY
+    dx, dy = dx_mm / sx, dy_mm / sy
     size = max(p['bbox_xy'][2] - p['bbox_xy'][0], p['bbox_xy'][3] - p['bbox_xy'][1])
     bbox = _move(fc, p, lambda o: np.float32([[1, 0, dx], [0, 1, dy]]), int(max(30, 0.6 * size) + np.hypot(dx, dy)))
     return bbox, {'shift_mm': round(mm, 2), 'shift_vec_mm': [round(dx_mm, 2), round(dy_mm, 2)],
@@ -271,7 +271,7 @@ def main(argv=None):
     sys.stdout.reconfigure(encoding='utf-8')
     d = default_paths()
     ap = argparse.ArgumentParser(description='合成缺陷考题')
-    ap.add_argument('--src', default=d['src'])
+    ap.add_argument('--src', default=d['src'], help='原图目录（默认读 RAILSIDE_EVAL_DATA_ROOT / RAILSIDE_RAW_ROOT、trip.json 或 数据/原始/T02/camImg）')
     ap.add_argument('--parts', default=d['parts'])
     ap.add_argument('--compare', default=d['compare'])
     ap.add_argument('--out', default=d['out'])

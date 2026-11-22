@@ -2,7 +2,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from ultralytics.utils import YAML
 
 from railside import cli, io
 from railside import segment as seg
@@ -103,6 +102,7 @@ def test_train_rejects_t02():
 
 @pytest.mark.skipif(not HAS_T01, reason='没有 T01 的 trip.json / manifest.json')
 def test_build_dataset_t01(tmp_path, monkeypatch):
+    YAML = pytest.importorskip('ultralytics.utils').YAML
     monkeypatch.setattr(seg, 'type_table', lambda: None)  # 用默认表：BOLT=1，BOX=4
     out = tmp_path / 'ds'
     st = seg.build_dataset(FIX, 'T01', 320, out)

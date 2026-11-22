@@ -28,6 +28,7 @@ STEPS = {
     'agent': 'agent',
     'mcp': 'agent',
     'app': 'app',
+    'demo': 'demo',
 }
 
 

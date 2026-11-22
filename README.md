@@ -2,7 +2,9 @@
 
 # railside：地铁列车侧面视觉检测
 
-输入地铁列车过车时线阵相机拍的侧面原始帧，输出整列长图、带编码的零件库，以及和模板车逐件比对后的告警，并提供本地网页浏览和智能体接口。
+[![CI](https://github.com/1Beyond1/railside/actions/workflows/ci.yml/badge.svg)](https://github.com/1Beyond1/railside/actions/workflows/ci.yml)
+
+输入地铁列车过车时线阵相机拍的侧面原始帧，输出整列长图、带编码的零件库，以及和模板车逐件比对后的告警，并提供双屏标准模板对齐对比网页和智能体接口。
 
 ## 流程
 
@@ -20,16 +22,18 @@
 | 比对 | `railside compare` | 缺失、位移、转角、遮挡、异物告警 |
 | 报告 | `railside report` | 生成单趟离线 HTML 报告（`index.html` + 局部图） |
 | 一键运行 | `railside run <原图目录> --trip <趟号>` | 从原始帧跑到入库与报告 |
-| 浏览 | `railside app` | 本地网页：整列 DZI 深度缩放浏览、零件详情、两趟对比（支持 `--export` 导出离线浏览包） |
+| 浏览 | `railside app` | 本地网页：双屏「本趟识别 vs 标准模板」对齐联动、同步十字准星、卷帘/差异高亮、巡检概览与可打印报告（支持 `--export` 导出离线浏览包） |
+| 脱敏演示 | `railside demo` | 几秒内生成纯程序合成、零隐私的 3 节编组示例数据（含两趟 + 模板 + 4 类告警），开箱即验全流程与网页 |
 | 智能体 | `railside agent` / `mcp` | 把查询、比对和流水线调用开放成智能体工具（MCP stdio） |
 
-## 安装
+## 安装与快速体验
 
 需要 Python 3.12+，用 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-uv sync
-uv run railside --help
+uv sync --no-group dl
+uv run railside demo      # 无需真实数据，一键生成纯合成脱敏示例并跑通全流程
+uv run railside app       # 打开浏览器体验双屏标准模板对比、告警复核与巡检报告
 uv run pytest 源码/tests
 ```
 

@@ -16,17 +16,17 @@ import cv2
 import numpy as np
 
 from .. import io
-from .frameset import FrameCopy
+from .frameset import FrameCopy, default_raw_src
 
 SEED = 20261118
 TRAIN = (40, 275)        # 车体内的帧（T01 实测 29–285，两头各让 10 帧）
 PER_KIND = 3
 
 
-def default_paths():
+def default_paths(trip='T01'):
     return {
-        'src': io.ROOT / '数据/原始/两次数据/ZXB_LC05D（1）/camImg',
-        'out': io.MID / '评测' / 'T01_bad' / 'camImg',
+        'src': default_raw_src(trip),
+        'out': io.MID / '评测' / f'{trip}_bad' / 'camImg',
         'truth': io.ROOT / '标注' / '评测' / '坏帧.json',
     }
 
@@ -99,7 +99,7 @@ def main(argv=None):
     sys.stdout.reconfigure(encoding='utf-8')
     d = default_paths()
     ap = argparse.ArgumentParser(description='坏帧考题')
-    ap.add_argument('--src', default=d['src'])
+    ap.add_argument('--src', default=d['src'], help='原图目录（默认读 RAILSIDE_EVAL_DATA_ROOT / RAILSIDE_RAW_ROOT、trip.json 或 数据/原始/T01/camImg）')
     ap.add_argument('--out', default=d['out'])
     ap.add_argument('--truth', default=d['truth'])
     ap.add_argument('--seed', type=int, default=SEED)

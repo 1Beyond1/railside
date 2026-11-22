@@ -158,3 +158,32 @@ def test_pairs_picks_compact_feature_not_edge():
     b = cv2.GaussianBlur(im, (0, 0), 3)
     assert pairs._distinct(b, 60, 100) < 0.7
     assert pairs._distinct(b, 150, 100) > 0.9
+
+
+def test_eval_default_paths_env_and_trip_json(root, monkeypatch):
+    monkeypatch.delenv('RAILSIDE_EVAL_DATA_ROOT', raising=False)
+    monkeypatch.delenv('RAILSIDE_RAW_ROOT', raising=False)
+
+    # 1. 默认路径仅使用通用 数据/原始/<trip>/camImg，不依赖私有子目录名
+    sp = synth.default_paths()
+    bp = badframes.default_paths()
+    assert sp['src'] == root / '数据' / '原始' / 'T02' / 'camImg'
+    assert bp['src'] == root / '数据' / '原始' / 'T01' / 'camImg'
+    assert sp['src'].relative_to(root).parts == ('数据', '原始', 'T02', 'camImg')
+    assert bp['src'].relative_to(root).parts == ('数据', '原始', 'T01', 'camImg')
+
+    # 2. 若 trip.json 已登记 src_dir，无环境变量时自动读取
+    io.write_json(io.MID / 'T02' / 'trip.json', {'trip': 'T02', 'src_dir': '数据/原始/custom_t02/camImg'})
+    assert synth.default_paths()['src'] == root / '数据' / '原始' / 'custom_t02' / 'camImg'
+
+    # 3. RAILSIDE_RAW_ROOT 优先生效
+    raw_root = root / 'ext_raw'
+    monkeypatch.setenv('RAILSIDE_RAW_ROOT', str(raw_root))
+    assert synth.default_paths()['src'] == raw_root / 'T02' / 'camImg'
+    assert badframes.default_paths()['src'] == raw_root / 'T01' / 'camImg'
+
+    # 4. RAILSIDE_EVAL_DATA_ROOT 优先级高于 RAILSIDE_RAW_ROOT
+    eval_root = root / 'ext_eval'
+    monkeypatch.setenv('RAILSIDE_EVAL_DATA_ROOT', str(eval_root))
+    assert synth.default_paths()['src'] == eval_root / 'T02' / 'camImg'
+    assert badframes.default_paths()['src'] == eval_root / 'T01' / 'camImg'

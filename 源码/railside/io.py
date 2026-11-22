@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 ROOT = Path(os.environ.get('RAILSIDE_ROOT') or Path(__file__).resolve().parents[2])
-DATA = ROOT / '数据'
+DATA = Path(os.environ['RAILSIDE_DATA']) if os.environ.get('RAILSIDE_DATA') else ROOT / '数据'
 MID = DATA / '中间'
 OUT = DATA / '成品'
 JPEG_MAX = 65500

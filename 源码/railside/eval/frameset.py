@@ -1,4 +1,5 @@
 """按趟坐标改一份原图拷贝：读需要的帧、改像素、只重写改过的帧，其余帧逐字节拷贝。"""
+import os
 import shutil
 from pathlib import Path
 
@@ -8,6 +9,25 @@ import numpy as np
 from .. import io
 from ..coords import H, W
 from ..frames import list_frames
+
+
+def default_raw_src(trip):
+    """解析评测原图目录：优先环境变量，其次 trip.json，最后回退到通用目录 数据/原始/<trip>/camImg。
+
+    支持的环境变量（按优先级）：
+    - RAILSIDE_EVAL_DATA_ROOT：评测原图根目录（取 <root>/<trip>/camImg）
+    - RAILSIDE_RAW_ROOT：原始图像根目录（取 <root>/<trip>/camImg）
+    """
+    raw_root = os.environ.get('RAILSIDE_EVAL_DATA_ROOT') or os.environ.get('RAILSIDE_RAW_ROOT')
+    if raw_root:
+        return Path(raw_root) / trip / 'camImg'
+    trip_meta = io.MID / trip / 'trip.json'
+    if trip_meta.is_file():
+        src_dir = io.read_json(trip_meta).get('src_dir')
+        if src_dir:
+            p = Path(src_dir)
+            return p if p.is_absolute() else io.ROOT / p
+    return io.ROOT / '数据' / '原始' / trip / 'camImg'
 
 
 class FrameCopy:

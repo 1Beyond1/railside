@@ -63,6 +63,8 @@ def start(kind, step, argv, trip, meta=None):
         raise Unavailable(f'railside {step} 还没实现（缺模块 railside.{cli.STEPS.get(step, step)}），装好后再试')
     job = Job(kind, trip, command(step, argv), meta)
     env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1', 'RAILSIDE_ROOT': str(io.ROOT)}
+    if io.DATA != io.ROOT / '数据':
+        env['RAILSIDE_DATA'] = str(io.DATA)
     try:
         job.proc = subprocess.Popen(job.cmd, cwd=str(io.ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace',
