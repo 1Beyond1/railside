@@ -1302,10 +1302,31 @@ function openReport() {
     `<div class="r-kpi"><small>跨趟对齐中位误差</small><b>${medPx != null ? `${fmt(medPx, 2)} px` : '基准趟'}</b></div>` +
     `</div>`;
 
+  const revByCar = new Map();
+  for (const r of al.rows) {
+    const car = carOf(r.xy);
+    if (!car) continue;
+    const rv = getReview(S.trip, r.code);
+    const cur = revByCar.get(car) || { pending: 0, confirmed: 0, ignored: 0 };
+    if (rv === 'confirmed') cur.confirmed++;
+    else if (rv === 'ignored') cur.ignored++;
+    else cur.pending++;
+    revByCar.set(car, cur);
+  }
+
   h += '<h2>一、分车厢巡检汇总</h2><table><thead><tr><th>车厢</th><th>正常件</th><th>零件告警</th><th>缺失件</th><th>异物告警</th><th>状态</th></tr></thead><tbody>' +
     carStats.map(c => {
       const bad = c.alarm + c.missing + c.foreign;
-      return `<tr><td>第 ${c.car} 节</td><td>${c.ok}</td><td>${c.alarm}</td><td>${c.missing}</td><td>${c.foreign}</td><td>${bad ? `待复核（${bad}）` : '正常'}</td></tr>`;
+      let st = '正常';
+      if (bad) {
+        const rc = revByCar.get(c.car) || { pending: bad, confirmed: 0, ignored: 0 };
+        const parts = [];
+        if (rc.confirmed) parts.push(`确认故障（${rc.confirmed}）`);
+        if (rc.pending) parts.push(`待复核（${rc.pending}）`);
+        if (!rc.confirmed && !rc.pending && rc.ignored) parts.push(`已复核（忽略 ${rc.ignored}）`);
+        st = parts.join(' · ') || `待复核（${bad}）`;
+      }
+      return `<tr><td>第 ${c.car} 节</td><td>${c.ok}</td><td>${c.alarm}</td><td>${c.missing}</td><td>${c.foreign}</td><td>${st}</td></tr>`;
     }).join('') + '</tbody></table>';
 
   h += `<h2>二、告警与异物复核清单（共 ${al.rows.length} 条，已复核 ${rs.done} 条：确认故障 ${rs.confirmed} / 误报忽略 ${rs.ignored}）</h2>`;
