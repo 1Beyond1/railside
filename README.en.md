@@ -1,63 +1,171 @@
-[简体中文](README.md) | English
+<div align="center">
 
-# railside: Side-View Visual Inspection for Metro Trains
+# railside
+
+**Side-View Line-Scan Visual Inspection System for Metro Trains**
+
+*End-to-end engineering framework from raw line-scan camera frames to full-train stitching, piecewise template alignment, per-part defect detection, synchronized dual-pane web review, and MCP agent tooling.*
+
+[简体中文](README.md) · [English](README.en.md) · [Changelog](CHANGELOG.md) · [Security & Compliance](SECURITY.md)
 
 [![CI](https://github.com/1Beyond1/railside/actions/workflows/ci.yml/badge.svg)](https://github.com/1Beyond1/railside/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.12%2B-3776ab.svg)](pyproject.toml)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-167%20passed-3ebd8b.svg)](.github/workflows/ci.yml)
 
-`railside` processes raw side-view line-scan camera frames of passing metro trains to produce full-train stitched imagery, a coded part inventory, and per-part comparison alarms against a reference template train, along with a synchronized dual-pane web viewer and agent/MCP tooling.
+<br>
 
-## Pipeline
+<img src="docs/assets/hero-dual-compare.png" alt="Synchronized Dual-Pane Real Bogie Inspection vs Standard Template Comparison" width="100%">
 
-| Stage | Command | Description |
-|---|---|---|
-| Ingest & QC | `railside ingest` | Checks frame order, dropped frames, exposure, and blur |
-| Stitch | `railside stitch` | Stitches consecutive frames into per-car panels (`train_panels`), writing `manifest.json` and 1/8-scale overview previews |
-| Tile export | `railside tiles` | Exports overlapping tiles in trip coordinates for labeling, training, and inference |
-| Calibration | `railside calib` | Computes mm/px scale from known carbody dimensions |
-| Template train | `railside template` / `label` | Builds the template train: alignment anchors and part polygons (SAM 2.1 box-prompt pre-labeling + human review) |
-| Alignment | `railside align` | Aligns a new trip to template-train coordinates via anchors |
-| Segmentation | `railside train` / `segment` | Builds/trains a multi-scale YOLO-seg model from template labels and runs sliding-window inference across a trip (optional) |
-| Part matching | `railside match` | Locates each expected part and assigns part codes and match scores |
-| Database & query | `railside db` / `query` | Writes results into SQLite and queries by car, bogie, or part type |
-| Comparison | `railside compare` | Detects missing parts, displacement, rotation, occlusion, and foreign-object alarms |
-| Report | `railside report` | Generates a standalone per-trip HTML report (`index.html` + part crops) |
-| End-to-end run | `railside run <raw-dir> --trip <trip-id>` | Runs the full pipeline from raw frames to database and HTML report |
-| Web viewer | `railside app` | Dual-pane synchronized inspection vs. template viewer, live synced crosshair, curtain/diff modal, dashboard, and printable reports (`--export` for offline bundles) |
-| Synthetic demo | `railside demo` | Generates a 100% synthetic, privacy-free 3-car dataset (template + inspection trip + 4 alarm types) in seconds |
-| Agent & MCP | `railside agent` / `mcp` | Exposes inspection queries, alarms, and pipeline runs as agent tools over MCP (stdio) |
+<sub>*Anonymized real underframe bogie line-scan imagery rendered live in synchronized dual-pane template comparison mode (hand-refined contours, 1.4 px ≈ 0.33 mm cross-trip alignment; zero operator, line, or vehicle identifiers).*</sub>
 
-## Installation & Quickstart
+</div>
+
+---
+
+## Key Capabilities
+
+- **One-Command Inspection Pipeline (`railside run`)**: Automates ingest quality control, full-train stitching, geometric `mm/px` calibration, multi-anchor piecewise alignment, hierarchical part matching, SQLite indexing, multi-criteria defect comparison, and HTML report generation.
+- **Synchronized Dual-Pane Template Comparison (`railside app`)**: Pairs the inspected trip (top) with the standard reference template train (bottom) via `align.json` piecewise mapping to compensate for speed-induced horizontal stretch. Includes a **live synced crosshair**, **bogie-by-bogie stepper**, **toggleable template outlines**, and a **draggable split divider**.
+- **Production Review & Reporting Workflow**: Interactive comparison modal (**Curtain Slider**, **Side-by-Side**, **Hold-to-Flip**, and **Pixel Difference Highlight**), full-part search & filtering, KPI overview dashboard, local manual review tracking, one-click **printable/PDF inspection reports**, and self-contained **read-only offline bundles** (`--export`).
+- **30-Second Zero-Data Evaluation (`railside demo`)**: Programmatically synthesizes a privacy-free 3-car dataset (template `T01` + inspected trip `T02` with missing, rotated, displaced, and foreign-object alarms) so reviewers can verify the full pipeline and web UI out of the box.
+- **Agent & MCP Integration (`railside agent` / `mcp`)**: Exposes database queries, alarm summaries, and pipeline execution over the Model Context Protocol (`stdio`).
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph P1["1. Acquisition & Geometry"]
+        direction LR
+        RAW["Raw Line-Scan Frames 2000×4096"] --> S1["S1 Ingest & QC · ingest"]
+        S1 --> S2["S2 Full-Train Stitch · stitch"]
+        S2 --> S3["S3 Calibration · calib"]
+        S2 --> S4["S4 Template Train · template / label"]
+    end
+
+    subgraph P2["2. Cross-Trip Alignment & Inspection"]
+        direction LR
+        S5["S5 Piecewise Alignment · align"] --> S6["S6 Matching / Segmentation · match / segment"]
+        S6 --> S8["S8 Defect Comparison · compare"]
+    end
+
+    subgraph P3["3. Storage, Dual-Pane Review & Agent"]
+        direction LR
+        S7["S7 SQLite Inventory · db / query"]
+        S9A["Dual-Pane Template Web UI · app"]
+        S9B["Offline HTML / PDF Report · report"]
+        S9C["Agent & MCP Server · agent / mcp"]
+    end
+
+    S3 --> S5
+    S4 --> S5
+    S6 --> S7
+    S8 --> S9A
+    S8 --> S9B
+    S7 --> S9A
+    S7 --> S9C
+```
+
+---
+
+## Interface Showcase
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/modal-curtain-compare.png" alt="Real Axlebox Curtain Slider Comparison Modal" width="100%">
+      <p align="center"><b>Real Axlebox Curtain Slider &amp; Pixel Diff Lightbox</b><br><sub>Compare standard template (left) vs. inspected trip (right) via pixel-aligned curtain swipe, side-by-side, hold-to-flip, or live difference highlighting</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/printable-report.png" alt="6-Car Real Printable Inspection Report Preview" width="100%">
+      <p align="center"><b>One-Click Printable / PDF Report</b><br><sub>Auto-generated 6-car maintenance report summarizing KPIs, per-car breakdown, side-by-side anomaly crops, and human review verdicts</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/assets/dashboard-overview.png" alt="6-Car Full-Train Dual-Pane Alignment and Inspection Overview Dashboard" width="100%">
+      <p align="center"><b>6-Car Full-Train Alignment &amp; Overview Dashboard</b><br><sub>Seamless deep zoom and synced crosshair over a 510,615 px 6-car scan (4.2 px ≈ 0.95 mm median alignment error) paired with 886-part per-car health and category breakdowns</sub></p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## 30-Second Quickstart (No Real Data Needed)
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/):
 
 ```bash
+# 1. Install core dependencies (lightweight, without optional deep-learning group)
 uv sync --no-group dl
-uv run railside demo      # No real data needed: generates synthetic demo & runs full pipeline
-uv run railside app       # Launch local web viewer with dual-pane template comparison
+
+# 2. Generate 100% synthetic demo dataset and run full pipeline (~15s)
+uv run railside demo
+
+# 3. Launch local dual-pane web viewer (default http://127.0.0.1:8765/)
+uv run railside app
+```
+
+Run the automated test suite:
+
+```bash
 uv run pytest 源码/tests
 ```
 
-`pyproject.toml` enables the `dev` and `dl` dependency groups by default (`ultralytics` is used for segmentation training/inference and SAM pre-labeling; model weights are not distributed in this repository). To install without deep-learning dependencies, run `uv sync --no-group dl`.
+> **Optional Deep-Learning Dependencies**: `pyproject.toml` includes a `dl` group (`ultralytics` for multi-scale YOLO-seg training/inference and SAM 2.1 pre-labeling; model weights are not distributed). Use `uv sync --no-group dl` for the core matching, web UI, and MCP workflow.
 
-## Directory Layout
+---
+
+## Pipeline & CLI Reference
+
+| Stage | Command | Description |
+|---|---|---|
+| **Ingest & QC** | `railside ingest` | Validates frame sequence, dropped frames, exposure, and blur while keeping raw frames read-only |
+| **Stitch** | `railside stitch` | Stitches consecutive frames into per-car panels (`train_panels`), producing `manifest.json` and 1/8 previews |
+| **Tiles** | `railside tiles` | Exports overlapping tiles in trip coordinates for labeling, training, and sliding-window inference |
+| **Calibration** | `railside calib` | Computes local `mm/px` scale curves from known carbody reference geometry |
+| **Template Train** | `railside template` / `label` | Builds frozen-code template trains with alignment anchors and part polygons |
+| **Alignment** | `railside align` | Multi-anchor piecewise alignment compensating for speed stretch and vertical shift |
+| **Segmentation** | `railside train` / `segment` | Optional multi-scale YOLO-seg dataset generation, training, and inference |
+| **Part Matching** | `railside match` | Parent-guided localization, masked NCC matching, and topology fallback |
+| **Database** | `railside db` / `query` | Writes normalized SQLite tables supporting per-car, per-bogie, and cross-trip history queries |
+| **Comparison** | `railside compare` | Flags missing parts, millimeter displacement, angular rotation (`Δθ`), appearance drift, and foreign objects |
+| **HTML Report** | `railside report` | Exports standalone per-trip HTML summary reports with part crops |
+| **End-to-End** | `railside run <raw-dir> --trip <id>` | Runs the complete pipeline from raw frames to database and HTML report |
+| **Web Viewer** | `railside app [--export <dir>]` | Launches the FastAPI + OpenSeadragon dual-pane viewer or exports a standalone offline bundle |
+| **Synthetic Demo** | `railside demo [--out <dir>]` | Generates a 100% synthetic 3-car dataset and executes the entire pipeline end-to-end |
+| **Agent / MCP** | `railside agent` / `mcp` | Natural-language CLI inspection agent and MCP `stdio` server (see [agent_mcp.md](源码/railside/agent_mcp.md)) |
+
+---
+
+## Engineering Quality & Layout
+
+- **Automated Verification**: `167` unit, pipeline, evaluation, web-API, and end-to-end demo tests automatically verified on every push via [GitHub Actions CI](.github/workflows/ci.yml).
+- **Privacy & Runtime Isolation**: All runtime datasets are strictly isolated under gitignored `数据/` (or `RAILSIDE_DATA`); see [SECURITY.md](SECURITY.md).
 
 ```text
-源码/railside/   Python package; one module per pipeline stage, wired together in cli.py
-源码/tests/      Test suite using synthetic data (no real train imagery required)
-主数据/          Master part-type table and comparison thresholds (零件类型.csv)
-数据/            Runtime data (raw frames, intermediate artifacts, outputs); excluded from Git
+railside/
+├── .github/workflows/ci.yml   # GitHub Actions automated test workflow
+├── 源码/
+│   ├── railside/              # Core Python package & FastAPI web application
+│   └── tests/                 # 167 automated synthetic tests (no real imagery required)
+├── 主数据/                    # Master part-type taxonomy & comparison thresholds (零件类型.csv)
+├── docs/assets/               # Anonymized real UI showcase screenshots (no raw datasets or operator info)
+├── CHANGELOG.md               # Release history
+├── SECURITY.md                # Security & data compliance policy
+└── pyproject.toml             # Dependency & build configuration (uv)
 ```
 
-## Data Notice
+---
 
-Real train image datasets belong to their respective owners and are neither included in this repository nor covered by its license.
+## Data Notice & License
 
-## License
+- **Data Ownership**: Real railway/metro imagery belongs exclusively to its respective operators/institutions and is **neither distributed in this repository nor covered by its license**.
+- **Open-Source License**: Licensed under **GNU AGPL-3.0** — see [LICENSE](LICENSE). Derivatives, including network-service deployments, must disclose source code under AGPL-3.0.
+- **Commercial Licensing**: For closed-source or commercial integration, please contact the author via GitHub.
 
-This project is licensed under the GNU AGPL-3.0 — see [LICENSE](LICENSE). You may freely use, modify, and distribute it, provided that derivative works (including network services built on top of it) also release their source code under AGPL-3.0.
+Copyright © 2026 1Beyond1
 
-For closed-source or commercial licensing, please contact the author via GitHub.
-
-Copyright (c) 2026 1Beyond1
-
-`源码/railside/app/static/vendor/openseadragon/` bundles OpenSeadragon 6.1.1 under its own BSD-3-Clause license (see [LICENSE.txt](源码/railside/app/static/vendor/openseadragon/LICENSE.txt)).
+<sub>Third-party notice: `源码/railside/app/static/vendor/openseadragon/` bundles OpenSeadragon 6.1.1 under BSD-3-Clause (see [LICENSE.txt](源码/railside/app/static/vendor/openseadragon/LICENSE.txt)).</sub>
