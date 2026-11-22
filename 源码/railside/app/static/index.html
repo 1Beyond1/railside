@@ -11,17 +11,21 @@
 <header class="topbar">
   <div class="brand">
     <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="9" width="28" height="12" rx="2"/><circle cx="9" cy="24" r="3"/><circle cx="23" cy="24" r="3"/><path d="M2 15h28"/></svg>
-    <div class="brand-text"><b>走行部侧面巡检</b><small>线阵侧面图像 · 两趟比对</small></div>
+    <div class="brand-text"><b>走行部侧面巡检</b><small>线阵侧面图像 · 标准模板比对</small></div>
   </div>
   <div class="trip-switch" id="tripSwitch" role="tablist" aria-label="趟次"></div>
+  <a class="nav-link" id="ocrLink" href="ocr.html" hidden>编号识别</a>
   <div class="status-strip" id="statusStrip"></div>
+  <button class="side-toggle" id="btnSideToggle" title="折叠/展开右侧栏（B）" aria-label="折叠/展开右侧栏">
+    <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M12.5 3.5v13"/></svg>
+  </button>
 </header>
 
-<main class="layout">
+<main class="layout" id="mainLayout">
   <section class="stage">
     <div class="carbar-wrap">
       <div class="carbar-ends"><span>← 车尾</span><span id="carbarTitle" class="carbar-title"></span><span>车头 →</span></div>
-      <div class="carbar" id="carbar" title="点击跳转；点车厢编号跳到该节车（键盘 1–6）">
+      <div class="carbar" id="carbar" title="点击跳转；点车厢编号跳到该节车（键盘 1–6）；点告警竖线直达告警">
         <img id="carbarImg" alt="">
         <div class="carbar-cars" id="carbarCars"></div>
         <div class="carbar-ticks" id="carbarTicks"></div>
@@ -29,14 +33,18 @@
       </div>
     </div>
 
-    <div class="viewer-wrap">
+    <div class="viewer-wrap" id="viewerWrap">
       <div id="viewer"></div>
+      <div class="split-bar" id="splitBar" title="上下拖动调整分屏比例；双击恢复 50/50"><span></span></div>
+      <div id="viewerCmp"></div>
+      <div class="vtag top" id="vtagTop">本趟识别</div>
+      <div class="vtag bot" id="vtagBot">标准模板</div>
       <div class="viewer-empty" id="viewerEmpty" hidden></div>
 
       <div class="tool-col" role="toolbar" aria-label="视图">
-        <button id="btnZoomIn" title="放大">
+        <button id="btnZoomIn" title="放大（+）">
           <svg viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button>
-        <button id="btnZoomOut" title="缩小">
+        <button id="btnZoomOut" title="缩小（-）">
           <svg viewBox="0 0 20 20"><path d="M4 10h12"/></svg></button>
         <button id="btnFitH" title="适应高度（H）">
           <svg viewBox="0 0 20 20"><path d="M10 3v14M7 6l3-3 3 3M7 14l3 3 3-3"/></svg></button>
@@ -52,6 +60,13 @@
         <label class="lchip" data-k="alarm"><input type="checkbox" checked><i class="sw st-alarm"></i>告警 <em id="cntAlarm">0</em></label>
         <label class="lchip" data-k="missing"><input type="checkbox" checked><i class="sw st-missing"></i>缺失 <em id="cntMissing">0</em></label>
         <label class="lchip" data-k="anchor"><input type="checkbox"><i class="sw st-anchor"></i>定位靶 <em id="cntAnchor">0</em></label>
+        <label class="lchip" data-k="tpl" id="chipTplBox" title="在下半屏标准模板上叠加标准零件轮廓"><input type="checkbox" id="chkTplBox" checked><i class="sw st-tpl"></i>模板框</label>
+        <span class="ctrl-sep"></span>
+        <div class="seg" id="cmpSeg" role="group" aria-label="对比模式">
+          <button type="button" data-mode="template" title="上半本趟识别，下半标准模板（按对齐映射精准联动）">模板对比</button>
+          <button type="button" data-mode="raw" title="上半本趟识别，下半同趟无标注原图">原图</button>
+          <button type="button" data-mode="off" title="单屏显示">单屏</button>
+        </div>
       </div>
       <div class="overlay-note" id="overlayNote" hidden></div>
 
@@ -60,18 +75,42 @@
     </div>
   </section>
 
-  <aside class="side">
+  <aside class="side" id="sidePanel">
     <nav class="side-tabs" role="tablist">
       <button data-tab="alarms" class="on">告警<span class="badge" id="alarmBadge"></span></button>
-      <button data-tab="summary">质检与对齐</button>
+      <button data-tab="parts">零件<span class="badge muted" id="partsBadge"></span></button>
+      <button data-tab="summary">质检对齐</button>
       <button data-tab="process">处理新趟</button>
       <button data-tab="chat">智能体</button>
     </nav>
 
     <div class="side-body">
       <section class="pane on" id="pane-alarms">
+        <div class="tour-bar" id="alarmTour" hidden>
+          <button type="button" class="ghost sm" id="btnPrevAlarm" title="上一条告警（[）">◀ 上一条</button>
+          <span class="tour-idx mono" id="alarmTourIdx">0 / 0</span>
+          <button type="button" class="ghost sm" id="btnNextAlarm" title="下一条告警（]）">下一条 ▶</button>
+        </div>
         <div class="filters" id="alarmFilters"></div>
         <div class="list" id="alarmList"></div>
+      </section>
+
+      <section class="pane" id="pane-parts">
+        <div class="part-search">
+          <input type="search" id="partQuery" placeholder="搜编码或类型，如 BOLT、螺栓、C1…" autocomplete="off">
+          <div class="part-selects">
+            <select id="partCar"><option value="">全部车厢</option></select>
+            <select id="partType"><option value="">全部类型</option></select>
+            <select id="partStatus">
+              <option value="">全部状态</option>
+              <option value="alarm">仅告警</option>
+              <option value="missing">仅缺失</option>
+              <option value="ok">仅正常</option>
+            </select>
+          </div>
+          <div class="part-meta" id="partMeta"></div>
+        </div>
+        <div class="list" id="partList"></div>
       </section>
 
       <section class="pane" id="pane-summary"><div id="summaryBody"></div></section>
@@ -103,14 +142,29 @@
         <button class="back" id="detailClose" title="关闭（Esc）">
           <svg viewBox="0 0 20 20"><path d="M12 4l-6 6 6 6"/></svg></button>
         <div class="detail-title"><span id="dCode" class="mono"></span><span id="dStatus" class="pill"></span></div>
-        <button class="ghost" id="dLocate" title="在长图中定位">定位</button>
+        <button class="ghost" id="dLocate" title="在长图中定位并同步模板">定位</button>
       </header>
       <div class="detail-body" id="detailBody"></div>
     </section>
   </aside>
 </main>
 
+<!-- 局部大图对比弹窗（支持卷帘、并排、按住切换） -->
+<div class="modal" id="cmpModal" hidden role="dialog" aria-modal="true" aria-label="模板与本趟大图对比">
+  <div class="modal-card">
+    <header class="modal-head">
+      <div class="modal-title"><span class="mono" id="mTitle"></span><small id="mSub"></small></div>
+      <div class="seg" id="mMode">
+        <button type="button" data-m="curtain" class="on">卷帘对比</button>
+        <button type="button" data-m="side">并排对比</button>
+        <button type="button" data-m="flip">按住切换</button>
+      </div>
+      <button type="button" class="ghost sm" id="mClose" title="关闭（Esc）">关闭</button>
+    </header>
+    <div class="modal-body" id="mBody"></div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>
-

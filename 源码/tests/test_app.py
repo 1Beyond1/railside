@@ -143,6 +143,16 @@ def test_overlay_and_alarms_other_trip(client, fake):
     assert al['types'] == {'ncc': 1, 'dtheta': 1, 'missing': 1, 'foreign': 1}
     fo = next(r for r in al['rows'] if r['kind'] == 'foreign')
     assert fo['xy'][0] == pytest.approx(200000 + fake['off'])  # bbox_uv 经 align 映射回趟坐标
+    assert fo['idx'] == 1 and fo['crops'] == {'template': True, 'trip': True}
+    # 标准模板对比映射：compare_ref 按 xd_trip 升序
+    ref = ov['compare_ref']
+    assert ref['template_trip'] == 'T01' and ref['is_template_trip'] is False
+    assert len(ref['map']) == 2 and ref['map'][0][0] < ref['map'][1][0] and ref['map'][0][1] < ref['map'][1][1]
+    # 异物局部对比图接口
+    for side in ('template', 'trip'):
+        r = client.get(f'/api/trips/T02/foreign/1/crop.jpg?side={side}')
+        assert r.status_code == 200 and r.content[:2] == JPEG
+    assert client.get('/api/trips/T02/foreign/99/crop.jpg?side=trip').status_code == 404
 
 
 @needs_data
@@ -269,6 +279,10 @@ def test_export_offline_bundle(fake, tmp_path):
     det = d['api']['/api/trips/T02/parts/C1-B1-BOLT-01']
     for side in ('template', 'trip'):
         assert det['crops'][side] and (out / 'data' / 'T02' / 'crops' / f'C1-B1-BOLT-01_{side}.jpg').read_bytes()[:2] == JPEG
+        assert (out / 'data' / 'T02' / 'crops' / f'foreign_1_{side}.jpg').read_bytes()[:2] == JPEG
+    # 自动附带标准模板参考趟 T01 的瓦片和模板轮廓
+    assert 'T01' in d['tiles'] and '/api/trips/T01/overlay' in d['api']
+    assert (out / 'data' / 'T01' / 'tiles' / '0' / '0_0.jpg').read_bytes()[:2] == JPEG
     assert (out / 'data' / 'T02' / 'overview.jpg').exists() and r['tiles'] > 0
     with pytest.raises(SystemExit):
         export(out, ['T02'], max_level=10, log=lambda m: None)

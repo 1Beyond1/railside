@@ -90,6 +90,10 @@ def create_app():
     def part_crop(trip: str, code: str, side: str = 'trip'):
         return Response(data.crop(trip, code, side), media_type='image/jpeg', headers=TILE_CACHE)
 
+    @app.get('/api/trips/{trip}/foreign/{idx}/crop.jpg')
+    def foreign_crop(trip: str, idx: int, side: str = 'trip'):
+        return Response(data.foreign_crop(trip, idx, side), media_type='image/jpeg', headers=TILE_CACHE)
+
     @app.get('/api/jobs')
     def job_list():
         return {'jobs': [j.view(tail=40) for j in jobs.all_jobs()]}

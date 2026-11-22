@@ -26,6 +26,29 @@ STATIC = Path(__file__).resolve().parent / 'static'
 QUALITY = 80
 
 
+def _export_tiles(out, trip, max_level, log):
+    d = out / 'data' / trip
+    p = dzi.pyramid(trip)
+    top = max(0, p.max_level - 1) if max_level is None else min(max_level, p.max_level)
+    k = 1 << (p.max_level - top)       # 前端瓦片边长、重叠都放大 k 倍，坐标仍按原分辨率
+    n_tiles = 0
+    for level in range(top + 1):
+        _, wl, hl = p.level(level)
+        cols, rows = -(-wl // dzi.TILE), -(-hl // dzi.TILE)
+        for c in range(cols):                     # 按列走：同一批原图帧连续读，帧缓存命中
+            for r in range(rows):
+                im = dzi.render(p, level, c, r)
+                ok, buf = cv2.imencode('.jpg', np.ascontiguousarray(im), [cv2.IMWRITE_JPEG_QUALITY, QUALITY])
+                if not ok:
+                    raise IOError(f'瓦片编码失败：{trip} {level}/{c}_{r}')
+                _write(d / 'tiles' / str(level) / f'{c}_{r}.jpg', buf.tobytes())
+                n_tiles += 1
+        log(f'{trip}: 第 {level} 层 {cols}×{rows} 张瓦片')
+    tile_meta = {'width': p.width, 'height': p.height, 'maxLevel': top,
+                 'tileSize': dzi.TILE * k, 'overlap': dzi.OVERLAP * k}
+    return tile_meta, n_tiles
+
+
 def export(out, trips=None, max_level=None, log=None):
     log = log or (lambda m: print(m, file=sys.stderr, flush=True))
     out = Path(out)
@@ -36,13 +59,17 @@ def export(out, trips=None, max_level=None, log=None):
     if not names:
         raise SystemExit('没有可导出的趟次：先跑完 match（要有 parts.json）')
     api, tiles, n_tiles, n_crops = {}, {}, 0, 0
+    ref_trips = []
     api['/api/trips'] = {'trips': [t for t in all_trips if t['trip'] in names]}
     for trip in names:
         info = data.trip_info(trip)
         api[f'/api/trips/{trip}'] = info
         api[f'/api/trips/{trip}/overlay'] = ov = data.overlay(trip)
-        api[f'/api/trips/{trip}/alarms'] = data.alarms(trip)
+        api[f'/api/trips/{trip}/alarms'] = al = data.alarms(trip)
         api[f'/api/trips/{trip}/summary'] = data.summary(trip)
+        ref = ov.get('compare_ref')
+        if ref and ref.get('template_trip') and ref['template_trip'] not in names and ref['template_trip'] not in ref_trips:
+            ref_trips.append(ref['template_trip'])
         d = out / 'data' / trip
         # 零件详情和两侧局部图
         codes = sorted({b['code'] for b in ov['boxes'] if b.get('code')})
@@ -53,27 +80,27 @@ def export(out, trips=None, max_level=None, log=None):
                 if det['crops'][side]:
                     _write(d / 'crops' / f'{code}_{side}.jpg', data.crop(trip, code, side))
                     n_crops += 1
+        # 异物两侧局部对比图
+        for row in al.get('rows') or []:
+            if row.get('kind') == 'foreign' and row.get('idx'):
+                idx = row['idx']
+                for side in ('template', 'trip'):
+                    if (row.get('crops') or {}).get(side):
+                        _write(d / 'crops' / f'foreign_{idx}_{side}.jpg', data.foreign_crop(trip, idx, side))
+                        n_crops += 1
         log(f'{trip}: {len(codes)} 个零件详情、{n_crops} 张局部图')
         # 长图瓦片 0..max_level 层
-        p = dzi.pyramid(trip)
-        top = max(0, p.max_level - 1) if max_level is None else min(max_level, p.max_level)
-        k = 1 << (p.max_level - top)       # 前端瓦片边长、重叠都放大 k 倍，坐标仍按原分辨率
-        for level in range(top + 1):
-            _, wl, hl = p.level(level)
-            cols, rows = -(-wl // dzi.TILE), -(-hl // dzi.TILE)
-            for c in range(cols):                     # 按列走：同一批原图帧连续读，帧缓存命中
-                for r in range(rows):
-                    im = dzi.render(p, level, c, r)
-                    ok, buf = cv2.imencode('.jpg', np.ascontiguousarray(im), [cv2.IMWRITE_JPEG_QUALITY, QUALITY])
-                    if not ok:
-                        raise IOError(f'瓦片编码失败：{trip} {level}/{c}_{r}')
-                    _write(d / 'tiles' / str(level) / f'{c}_{r}.jpg', buf.tobytes())
-                    n_tiles += 1
-            log(f'{trip}: 第 {level} 层 {cols}×{rows} 张瓦片')
-        tiles[trip] = {'width': p.width, 'height': p.height, 'maxLevel': top,
-                       'tileSize': dzi.TILE * k, 'overlap': dzi.OVERLAP * k}
+        tiles[trip], cnt = _export_tiles(out, trip, max_level, log)
+        n_tiles += cnt
         ovw = dzi.overview_bytes(trip, 4000, 112)
         _write(d / 'overview.jpg', ovw)
+    # 自动导出对应标准模板趟的瓦片和模板轮廓，支撑离线双屏「本趟识别 vs 标准模板」对比
+    for ref_trip in ref_trips:
+        api[f'/api/trips/{ref_trip}'] = data.trip_info(ref_trip)
+        api[f'/api/trips/{ref_trip}/overlay'] = data.overlay(ref_trip)
+        tiles[ref_trip], cnt = _export_tiles(out, ref_trip, max_level, log)
+        n_tiles += cnt
+        log(f'{ref_trip}（标准模板参考）: 导出完成')
     # 前端：页面、样式、脚本、OpenSeadragon；路径改成相对路径，先载入 data.js
     shutil.copytree(STATIC, out / 'static')
     html = (STATIC / 'index.html').read_text(encoding='utf-8')

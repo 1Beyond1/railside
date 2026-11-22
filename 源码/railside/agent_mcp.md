@@ -25,13 +25,13 @@ Claude Code 这类客户端可以直接接。工具实现、留痕和 `railside 
 用虚拟环境里的入口（推荐，工作目录无关，包是 editable 安装，项目根自动识别）：
 
 ```
-claude mcp add railside -- "D:\我的文件文档\学业\实验\.venv\Scripts\railside.exe" mcp
+claude mcp add railside -- "D:\path\to\railside\.venv\Scripts\railside.exe" mcp
 ```
 
 或者走 uv（每次启动会先同步环境，慢一点）：
 
 ```
-claude mcp add railside -- uv run --project "D:\我的文件文档\学业\实验" railside mcp
+claude mcp add railside -- uv run --project "D:\path\to\railside" railside mcp
 ```
 
 项目挪了位置、或要用别的数据目录时，加一个环境变量 `RAILSIDE_ROOT=<项目根>`

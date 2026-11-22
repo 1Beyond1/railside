@@ -45,20 +45,27 @@ const JOB = { running: '运行中', ok: '完成', partial: '部分完成', faile
 
 const S = {
   trips: [], trip: null, info: null, ov: null, alarms: null, summary: null,
+  tplTrip: null, tplInfo: null, tplOv: null, tplByCode: new Map(), cmpRef: null,
   byCode: new Map(), filter: 'all', sel: null, tok: 0, dtok: 0, jobsTimer: null, seenRunning: new Set(),
+  partLimit: 200, modal: null,
 };
 
-/* ---------------- 浏览器与叠加层 ---------------- */
+/* ---------------- 浏览器与双屏叠加层 ---------------- */
 
-const viewer = OpenSeadragon({
-  element: $('#viewer'),
-  prefixUrl: OFF ? 'static/vendor/openseadragon/images/' : '/static/vendor/openseadragon/images/',
-  showNavigationControl: false, showNavigator: false,
-  visibilityRatio: 1, constrainDuringPan: true, minZoomImageRatio: 0.95, maxZoomPixelRatio: 3,
-  zoomPerScroll: 1.35, animationTime: 0.5, springStiffness: 9,
-  imageLoaderLimit: 8, timeout: 60000,
-  gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true, flickEnabled: false },
-});
+function makeViewer(el) {
+  return OpenSeadragon({
+    element: el,
+    prefixUrl: OFF ? 'static/vendor/openseadragon/images/' : '/static/vendor/openseadragon/images/',
+    showNavigationControl: false, showNavigator: false,
+    visibilityRatio: 1, constrainDuringPan: true, minZoomImageRatio: 0.95, maxZoomPixelRatio: 3,
+    zoomPerScroll: 1.35, animationTime: 0.45, springStiffness: 9,
+    imageLoaderLimit: 8, timeout: 60000,
+    gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true, flickEnabled: false },
+  });
+}
+
+const viewer = makeViewer($('#viewer'));
+const viewerCmp = makeViewer($('#viewerCmp'));
 
 const svg = document.createElementNS(NS, 'svg');
 svg.setAttribute('class', 'ov hide-anchor');
@@ -70,26 +77,54 @@ root.append(gAnc, gBox, gSel);
 svg.append(root);
 viewer.canvas.appendChild(svg);
 
+/* 下半屏（标准模板）独立 SVG 叠加层 */
+const svgCmp = document.createElementNS(NS, 'svg');
+svgCmp.setAttribute('class', 'ov');
+const rootCmp = document.createElementNS(NS, 'g');
+const gTplBox = document.createElementNS(NS, 'g');
+const gTplSel = document.createElementNS(NS, 'g');
+rootCmp.append(gTplBox, gTplSel);
+svgCmp.append(rootCmp);
+viewerCmp.canvas.appendChild(svgCmp);
+
 function ready() { return S.info && viewer.world.getItemCount() > 0; }
+function cmpReady() { return viewerCmp.world.getItemCount() > 0; }
+
+function syncSvgTransform(v, g) {
+  if (v.world.getItemCount() === 0) return;
+  const vp = v.viewport;
+  const p0 = vp.imageToViewerElementCoordinates(new OpenSeadragon.Point(0, 0));
+  const p1 = vp.imageToViewerElementCoordinates(new OpenSeadragon.Point(10000, 0));
+  g.setAttribute('transform', `translate(${p0.x} ${p0.y}) scale(${(p1.x - p0.x) / 10000})`);
+}
 
 function syncOverlay() {
   if (!ready()) return;
-  const vp = viewer.viewport;
-  const p0 = vp.imageToViewerElementCoordinates(new OpenSeadragon.Point(0, 0));
-  const p1 = vp.imageToViewerElementCoordinates(new OpenSeadragon.Point(10000, 0));
-  root.setAttribute('transform', `translate(${p0.x} ${p0.y}) scale(${(p1.x - p0.x) / 10000})`);
+  syncSvgTransform(viewer, root);
   syncCarbarView();
 }
-['animation', 'viewport-change', 'update-viewport', 'resize'].forEach(ev => viewer.addHandler(ev, syncOverlay));
+function syncCmpOverlay() {
+  if (!cmpReady()) return;
+  syncSvgTransform(viewerCmp, rootCmp);
+}
 
-viewer.addHandler('open', () => { jumpCar(1, true); syncOverlay(); });
+['animation', 'viewport-change', 'update-viewport'].forEach(ev => {
+  viewer.addHandler(ev, syncOverlay);
+  viewerCmp.addHandler(ev, syncCmpOverlay);
+});
+viewer.addHandler('resize', () => { syncOverlay(); if (cmpMode !== 'off') { leader = viewer; follow(viewer); } });
+viewerCmp.addHandler('resize', () => { if (cmpMode !== 'off') { leader = viewer; follow(viewer); } syncCmpOverlay(); });
+
+viewer.addHandler('open', () => { jumpCar(1, true); syncOverlay(); follow(viewer); });
 viewer.addHandler('open-failed', e => showViewerEmpty(`长图打不开：${e.message || '未知错误'}`));
 
-viewer.addHandler('canvas-click', e => {
-  if (!e.quick) return;
-  const code = e.originalEvent.target?.dataset?.code;
-  if (code) { e.preventDefaultAction = true; selectPart(code, false); }
-});
+for (const v of [viewer, viewerCmp]) {
+  v.addHandler('canvas-click', e => {
+    if (!e.quick) return;
+    const code = e.originalEvent.target?.dataset?.code;
+    if (code && findRow(code)) { e.preventDefaultAction = true; selectPart(code, false); }
+  });
+}
 
 function showViewerEmpty(text) { const el = $('#viewerEmpty'); el.textContent = text; el.hidden = false; }
 
@@ -99,6 +134,15 @@ function rectEl(r, cls, code) {
   el.setAttribute('width', Math.max(r[2], 1)); el.setAttribute('height', Math.max(r[3], 1));
   el.setAttribute('class', cls);
   if (code) el.dataset.code = code;
+  return el;
+}
+
+function partEl(b, cls) {
+  if (!b.poly) return rectEl(b.rect, cls, b.code);
+  const el = document.createElementNS(NS, 'polygon');
+  el.setAttribute('points', b.poly.map(p => p.join(',')).join(' '));
+  el.setAttribute('class', cls);
+  if (b.code) el.dataset.code = b.code;
   return el;
 }
 
@@ -115,7 +159,7 @@ function renderOverlay() {
   const frag = document.createDocumentFragment();
   for (const b of [...ov.boxes].sort((a, b) => order[a.status] - order[b.status])) {
     S.byCode.set(b.code, b);
-    frag.append(rectEl(b.rect, `st-${b.status}`, b.code));
+    frag.append(partEl(b, `st-${b.status}`));
   }
   gBox.append(frag);
   const fa = document.createDocumentFragment();
@@ -124,12 +168,222 @@ function renderOverlay() {
   markSel();
 }
 
+function renderTplOverlay() {
+  gTplBox.replaceChildren(); gTplSel.replaceChildren(); S.tplByCode.clear();
+  if (cmpMode !== 'template' || !S.tplOv) return;
+  const frag = document.createDocumentFragment();
+  for (const b of S.tplOv.boxes || []) {
+    S.tplByCode.set(b.code, b);
+    frag.append(partEl(b, 'st-tpl'));
+  }
+  gTplBox.append(frag);
+  markSel();
+  syncCmpOverlay();
+}
+
 $('#layerCtrl').addEventListener('change', e => {
   const chip = e.target.closest('.lchip');
-  if (chip) svg.classList.toggle(`hide-${chip.dataset.k}`, !e.target.checked);
+  if (!chip) return;
+  if (chip.dataset.k === 'tpl') {
+    svgCmp.classList.toggle('hide-tpl', !e.target.checked);
+    return;
+  }
+  svg.classList.toggle(`hide-${chip.dataset.k}`, !e.target.checked);
 });
 
-/* 视图操作 */
+/* ---------------- 双屏对比与对齐联动 ---------------- */
+/* 模式：'template'（本趟识别 vs 标准模板，按 align.json 分段映射精准联动）| 'raw'（同趟无标注原图）| 'off'（单屏） */
+const CMP_KEY = 'railside.cmpMode';
+let cmpMode = 'template', leader = viewer, loadedCmpKey = null;
+
+function canTemplateCmp() {
+  return Boolean(S.cmpRef && !S.cmpRef.is_template_trip && S.tplInfo && (!OFF || OFF.tiles[S.tplTrip]));
+}
+
+/* 二分分段线性插值（与 Python AlignMap._interp 保持一致） */
+function interpMap(pts, q, colIn, colOut, clampOut = false) {
+  const n = pts.length;
+  if (!n) return q;
+  if (n === 1) return pts[0][colOut];
+  if (q <= pts[0][colIn]) {
+    if (clampOut) return pts[0][colOut];
+    const dx = pts[1][colIn] - pts[0][colIn];
+    return dx ? pts[0][colOut] + (q - pts[0][colIn]) * (pts[1][colOut] - pts[0][colOut]) / dx : pts[0][colOut];
+  }
+  if (q >= pts[n - 1][colIn]) {
+    if (clampOut) return pts[n - 1][colOut];
+    const dx = pts[n - 1][colIn] - pts[n - 2][colIn];
+    return dx ? pts[n - 1][colOut] + (q - pts[n - 1][colIn]) * (pts[n - 1][colOut] - pts[n - 2][colOut]) / dx : pts[n - 1][colOut];
+  }
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid][colIn] <= q) lo = mid; else hi = mid;
+  }
+  const a = pts[lo], b = pts[hi];
+  const t = (b[colIn] === a[colIn]) ? 0 : (q - a[colIn]) / (b[colIn] - a[colIn]);
+  return a[colOut] + t * (b[colOut] - a[colOut]);
+}
+
+function mapPoint(pt, fromMain) {
+  if (cmpMode !== 'template') return { x: pt.x, y: pt.y };
+  const pts = S.cmpRef?.map;
+  if (!pts || pts.length < 2) {
+    const w1 = S.info?.width || 1, w2 = S.tplInfo?.width || 1;
+    return fromMain ? { x: pt.x * (w2 / w1), y: pt.y } : { x: pt.x * (w1 / w2), y: pt.y };
+  }
+  if (fromMain) {
+    const xt = interpMap(pts, pt.x, 0, 1, false);
+    const dy = interpMap(pts, pt.x, 0, 2, true);
+    return { x: xt, y: pt.y - dy };
+  }
+  const xm = interpMap(pts, pt.x, 1, 0, false);
+  const dy = interpMap(pts, pt.x, 1, 2, true);
+  return { x: xm, y: pt.y + dy };
+}
+
+function follow(from) {
+  if (cmpMode === 'off' || from !== leader) return;
+  const to = from === viewer ? viewerCmp : viewer;
+  if (to.world.getItemCount() === 0 || from.world.getItemCount() === 0) return;
+  const fromMain = from === viewer;
+  const fromW = from.world.getItemAt(0).getContentSize().x || 1;
+  const toW = to.world.getItemAt(0).getContentSize().x || 1;
+  const cFrom = from.viewport.viewportToImageCoordinates(from.viewport.getCenter(true));
+  const cTo = mapPoint(cFrom, fromMain);
+  const toVpZoom = from.viewport.getZoom(true) * (toW / fromW);
+  to.viewport.zoomTo(toVpZoom, null, true);
+  to.viewport.panTo(to.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(cTo.x, cTo.y)), true);
+  if (fromMain) syncCmpOverlay(); else syncOverlay();
+}
+
+function resyncDual() {
+  const run = () => {
+    for (const v of [viewer, viewerCmp]) {
+      if (v.viewport && v.container.clientWidth > 0 && v.container.clientHeight > 0) {
+        v.viewport.resize(new OpenSeadragon.Point(v.container.clientWidth, v.container.clientHeight), true);
+      }
+    }
+    leader = viewer;
+    follow(viewer);
+    syncOverlay();
+    syncCmpOverlay();
+  };
+  requestAnimationFrame(() => { run(); setTimeout(run, 80); });
+}
+
+for (const v of [viewer, viewerCmp]) {
+  ['animation', 'viewport-change'].forEach(ev => v.addHandler(ev, () => follow(v)));
+  ['canvas-press', 'canvas-scroll', 'canvas-drag', 'canvas-pinch', 'canvas-double-click']
+    .forEach(ev => v.addHandler(ev, () => { leader = v; }));
+}
+viewerCmp.addHandler('open', () => {
+  renderTplOverlay();
+  resyncDual();
+});
+document.addEventListener('pointerdown', e => { if (!e.target.closest('#viewerCmp')) leader = viewer; }, true);
+document.addEventListener('keydown', () => { leader = viewer; }, true);
+
+function tileSourceFor(trip, info) {
+  return OFF ? offlineTiles(trip) : info.dzi.url;
+}
+
+function updateCmpUI() {
+  const wrap = $('#viewerWrap');
+  const hasTpl = canTemplateCmp();
+  const btnTpl = $('#cmpSeg button[data-mode="template"]');
+  btnTpl.disabled = !hasTpl;
+  btnTpl.title = hasTpl
+    ? `上半本趟识别（${S.trip}），下半标准模板（${S.tplTrip} · ${S.cmpRef.template_ver || ''}），按对齐映射联动`
+    : (S.cmpRef?.is_template_trip ? '当前浏览的就是标准模板趟' : '缺少标准模板长图');
+
+  let eff = cmpMode;
+  if (eff === 'template' && !hasTpl) eff = 'raw';
+  wrap.classList.toggle('cmp', eff !== 'off');
+  $('#chipTplBox').hidden = eff !== 'template';
+  $$('#cmpSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === eff));
+
+  if (eff === 'template') {
+    const aligned = Boolean(S.cmpRef?.map?.length >= 2);
+    $('#vtagTop').innerHTML = `<i></i>本趟识别 · ${esc(S.trip || '')}`;
+    $('#vtagBot').innerHTML = `<i></i>标准模板 · ${esc(S.cmpRef?.template_ver || '')} (${esc(S.tplTrip || '')})${aligned ? ' · 对齐联动' : ''}`;
+  } else if (eff === 'raw') {
+    $('#vtagTop').innerHTML = `<i></i>识别标注 · ${esc(S.trip || '')}`;
+    $('#vtagBot').innerHTML = `<i></i>本趟原图（无标注） · ${esc(S.trip || '')}`;
+  }
+
+  if (eff === 'off') {
+    if (loadedCmpKey) { viewerCmp.close(); loadedCmpKey = null; }
+    gTplBox.replaceChildren(); gTplSel.replaceChildren();
+    return;
+  }
+  const targetTrip = eff === 'template' ? S.tplTrip : S.trip;
+  const targetInfo = eff === 'template' ? S.tplInfo : S.info;
+  const key = `${eff}:${targetTrip}`;
+  if (targetTrip && targetInfo && key !== loadedCmpKey) {
+    loadedCmpKey = key;
+    viewerCmp.open(tileSourceFor(targetTrip, targetInfo));
+  }
+  if (eff === 'template') renderTplOverlay();
+  else { gTplBox.replaceChildren(); gTplSel.replaceChildren(); }
+  resyncDual();
+}
+
+function setCmpMode(mode, persist = true) {
+  cmpMode = mode;
+  if (persist) { try { localStorage.setItem(CMP_KEY, mode); } catch { /* 忽略 */ } }
+  updateCmpUI();
+}
+
+$('#cmpSeg').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  setCmpMode(b.dataset.mode, true);
+});
+{
+  let saved = null;
+  try { saved = localStorage.getItem(CMP_KEY); } catch { /* 忽略 */ }
+  cmpMode = (saved === 'template' || saved === 'raw' || saved === 'off') ? saved : 'template';
+}
+
+/* 可拖动上下分屏比例条 */
+(() => {
+  const bar = $('#splitBar'), wrap = $('#viewerWrap');
+  let drag = false;
+  bar.addEventListener('pointerdown', e => {
+    drag = true; bar.classList.add('drag'); bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const r = wrap.getBoundingClientRect();
+    const pct = Math.max(20, Math.min(80, (e.clientY - r.top) / r.height * 100));
+    wrap.style.setProperty('--split', `${pct.toFixed(1)}%`);
+    syncOverlay(); syncCmpOverlay();
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = false; bar.classList.remove('drag');
+    resyncDual();
+  };
+  bar.addEventListener('pointerup', end);
+  bar.addEventListener('pointercancel', end);
+  bar.addEventListener('dblclick', () => {
+    wrap.style.setProperty('--split', '50%');
+    resyncDual();
+  });
+})();
+
+/* 侧栏折叠 */
+function toggleSide(force) {
+  const lay = $('#mainLayout');
+  const collapsed = typeof force === 'boolean' ? force : !lay.classList.contains('side-collapsed');
+  lay.classList.toggle('side-collapsed', collapsed);
+  $('#btnSideToggle').classList.toggle('collapsed', collapsed);
+  resyncDual();
+}
+$('#btnSideToggle').onclick = () => toggleSide();
+
+/* ---------------- 视图操作 ---------------- */
 function aspect() { const el = viewer.container; return el.clientWidth / Math.max(el.clientHeight, 1); }
 
 function fitHeightAt(xd, immediately = false) {
@@ -152,51 +406,63 @@ function jumpCar(k, immediately = false) {
   const c = S.info?.cars.find(c => c.car === k);
   if (!c) return;
   const w = S.info.height * aspect();
-  fitHeightAt(c.xd + c.w - w / 2 - w * 0.02, immediately); // 车头一端（右端）贴着视口右缘
+  fitHeightAt(c.xd + c.w - w / 2 - w * 0.02, immediately);
 }
 
 function flyTo([x, y, w, h]) {
+  leader = viewer;
   const a = aspect();
   let tw = Math.max(w * 5, 1600), th = Math.max(h * 5, 1000);
   if (tw / th > a) th = tw / a; else tw = th * a;
   viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(x + w / 2 - tw / 2, y + h / 2 - th / 2, tw, th));
 }
 
-$('#btnZoomIn').onclick = () => { viewer.viewport.zoomBy(1.6); viewer.viewport.applyConstraints(); };
-$('#btnZoomOut').onclick = () => { viewer.viewport.zoomBy(1 / 1.6); viewer.viewport.applyConstraints(); };
-$('#btnFitH').onclick = () => { if (ready()) { const b = viewImageRect(); fitHeightAt(b.x + b.width / 2); } };
-$('#btnHome').onclick = () => viewer.viewport.goHome();
+$('#btnZoomIn').onclick = () => { leader = viewer; viewer.viewport.zoomBy(1.6); viewer.viewport.applyConstraints(); };
+$('#btnZoomOut').onclick = () => { leader = viewer; viewer.viewport.zoomBy(1 / 1.6); viewer.viewport.applyConstraints(); };
+$('#btnFitH').onclick = () => { if (ready()) { leader = viewer; const b = viewImageRect(); fitHeightAt(b.x + b.width / 2); } };
+$('#btnHome').onclick = () => { leader = viewer; viewer.viewport.goHome(); };
 $('#btnFull').onclick = () => {
-  if (document.fullscreenElement) document.exitFullscreen(); else $('.viewer-wrap').requestFullscreen();
+  if (document.fullscreenElement) document.exitFullscreen(); else $('#viewerWrap').requestFullscreen();
 };
 
-/* 读数与悬停提示 */
-const viewerEl = $('#viewer');
-viewerEl.addEventListener('mousemove', e => {
-  if (!ready()) return;
-  const box = viewerEl.getBoundingClientRect();
-  const p = viewer.viewport.viewerElementToImageCoordinates(new OpenSeadragon.Point(e.clientX - box.left, e.clientY - box.top));
-  const I = S.info, xd = Math.floor(p.x), y = Math.floor(p.y);
-  const scale = viewer.viewport.viewportToImageZoom(viewer.viewport.getZoom(true));
-  const ratio = scale >= 1 ? `${fmt(scale, 1)}:1` : `1:${fmt(1 / scale, 1)}`;
-  if (xd < 0 || xd >= I.width || y < 0 || y >= I.height) {
-    $('#readout').textContent = `比例 ${ratio}`;
-  } else {
-    const x = I.train_x1 - 1 - xd;
-    const car = I.cars.find(c => x >= c.x0 && x < c.x1);
-    $('#readout').textContent =
-      `趟坐标 x ${x}  y ${y}   帧 ${Math.floor(x / I.frame_w) + 1} 列 ${x % I.frame_w}   第 ${car?.car ?? '—'} 节   比例 ${ratio}`;
-  }
-  const tip = $('#tip'), code = e.target?.dataset?.code;
-  const b = code && S.byCode.get(code);
-  if (b) {
-    const wrap = $('.viewer-wrap').getBoundingClientRect();
-    tip.innerHTML = `<span class="mono">${esc(b.code)}</span> · ${esc(b.type_name || b.type || '')} · ${STATUS[b.status]}`;
-    tip.style.left = `${e.clientX - wrap.left + 14}px`; tip.style.top = `${e.clientY - wrap.top + 14}px`;
-    tip.hidden = false;
-  } else tip.hidden = true;
-});
-viewerEl.addEventListener('mouseleave', () => { $('#tip').hidden = true; });
+/* ---------------- 读数与悬停提示（上下双屏均支持） ---------------- */
+function bindReadout(el, v, getInfo, getMap, labelPrefix) {
+  el.addEventListener('mousemove', e => {
+    const I = getInfo();
+    if (!I || v.world.getItemCount() === 0) return;
+    const box = el.getBoundingClientRect();
+    const p = v.viewport.viewerElementToImageCoordinates(new OpenSeadragon.Point(e.clientX - box.left, e.clientY - box.top));
+    const xd = Math.floor(p.x), y = Math.floor(p.y);
+    const scale = v.viewport.viewportToImageZoom(v.viewport.getZoom(true));
+    const ratio = scale >= 1 ? `${fmt(scale, 1)}:1` : `1:${fmt(1 / scale, 1)}`;
+    const tag = labelPrefix();
+    if (xd < 0 || xd >= I.width || y < 0 || y >= I.height) {
+      $('#readout').textContent = `${tag}  比例 ${ratio}`;
+    } else {
+      const x = I.train_x1 - 1 - xd;
+      const car = I.cars.find(c => x >= c.x0 && x < c.x1);
+      $('#readout').textContent =
+        `${tag}  x ${x}  y ${y}   帧 ${Math.floor(x / I.frame_w) + 1} 列 ${x % I.frame_w}   第 ${car?.car ?? '—'} 节   比例 ${ratio}`;
+    }
+    const tip = $('#tip'), code = e.target?.dataset?.code;
+    const b = code && (getMap().get(code) || S.byCode.get(code));
+    if (b) {
+      const wrap = $('#viewerWrap').getBoundingClientRect();
+      const stText = v === viewerCmp && cmpMode === 'template' ? '标准模板' : (STATUS[b.status] || '');
+      tip.innerHTML = `<span class="mono">${esc(b.code)}</span> · ${esc(b.type_name || b.type || '')} · ${stText}`;
+      tip.style.left = `${Math.min(e.clientX - wrap.left + 14, wrap.width - 240)}px`;
+      tip.style.top = `${e.clientY - wrap.top + 14}px`;
+      tip.hidden = false;
+    } else tip.hidden = true;
+  });
+  el.addEventListener('mouseleave', () => { $('#tip').hidden = true; });
+}
+
+bindReadout($('#viewer'), viewer, () => S.info, () => S.byCode, () => `[本趟 ${S.trip || ''}]`);
+bindReadout($('#viewerCmp'), viewerCmp,
+  () => (cmpMode === 'template' && S.tplInfo ? S.tplInfo : S.info),
+  () => (cmpMode === 'template' ? S.tplByCode : S.byCode),
+  () => (cmpMode === 'template' && S.tplTrip ? `[模板 ${S.tplTrip}]` : `[原图 ${S.trip || ''}]`));
 
 /* ---------------- 车厢导航条 ---------------- */
 
@@ -216,8 +482,15 @@ function renderTicks() {
   const W = S.info?.width;
   const rows = (S.alarms?.rows || []).filter(r => r.rect);
   $('#carbarTicks').innerHTML = W ? rows.map(r =>
-    `<i class="${r.status === 'missing' ? 'missing' : 'alarm'}" style="left:${(r.rect[0] + r.rect[2] / 2) / W * 100}%"></i>`).join('') : '';
+    `<i class="${r.status === 'missing' ? 'missing' : 'alarm'}" data-code="${esc(r.code)}" ` +
+    `title="点击直达：${esc(r.code)}（${esc(r.type_name || r.type || '')}）" ` +
+    `style="left:${(r.rect[0] + r.rect[2] / 2) / W * 100}%"></i>`).join('') : '';
 }
+
+$('#carbarTicks').addEventListener('click', e => {
+  const tick = e.target.closest('i[data-code]');
+  if (tick) { e.stopPropagation(); selectPart(tick.dataset.code, true); }
+});
 
 function syncCarbarView() {
   const W = S.info.width, b = viewImageRect();
@@ -234,7 +507,7 @@ function syncCarbarView() {
   let drag = false;
   const at = e => { const r = bar.getBoundingClientRect(); return (e.clientX - r.left) / r.width * S.info.width; };
   bar.addEventListener('pointerdown', e => {
-    if (!ready()) return;
+    if (!ready() || e.target.closest('#carbarTicks i')) return;
     const label = e.target.closest('.car-seg span');
     if (label) { jumpCar(+label.parentElement.dataset.car); return; }
     drag = true; bar.setPointerCapture(e.pointerId); panToXd(at(e));
@@ -270,7 +543,6 @@ $('#tripSwitch').addEventListener('click', e => {
   if (b && b.dataset.trip !== S.trip) selectTrip(b.dataset.trip);
 });
 
-/* 离线包的长图：只导到 maxLevel 层，瓦片边长、重叠按倍数放大，图像坐标仍是原分辨率（零件框不用换算） */
 function offlineTiles(trip) {
   const t = OFF.tiles[trip];
   return {
@@ -281,16 +553,18 @@ function offlineTiles(trip) {
 
 async function selectTrip(trip) {
   const tok = ++S.tok;
-  S.trip = trip; S.sel = null; S.filter = 'all'; S.ov = S.alarms = S.summary = null;
+  S.trip = trip; S.sel = null; S.filter = 'all';
+  S.ov = S.alarms = S.summary = S.tplTrip = S.tplInfo = S.tplOv = S.cmpRef = null;
+  loadedCmpKey = null;
   history.replaceState(null, '', `#${enc(trip)}`);
-  renderTripSwitch(); closeDetail(); renderOverlay(); renderAlarms(); renderStatus();
+  renderTripSwitch(); closeDetail(); renderOverlay(); renderAlarms(); renderPartsFilterOpts(); renderPartsList(); renderStatus();
   $('#summaryBody').innerHTML = '<div class="empty">读取中…</div>';
   try {
     S.info = await api(`/api/trips/${enc(trip)}`);
   } catch (e) { showViewerEmpty(e.message); return; }
   if (tok !== S.tok) return;
   $('#viewerEmpty').hidden = true;
-  viewer.open(OFF ? offlineTiles(trip) : S.info.dzi.url);
+  viewer.open(tileSourceFor(trip, S.info));
   renderCarbar();
   const [ov, al, sm] = await Promise.allSettled([
     api(`/api/trips/${enc(trip)}/overlay`), api(`/api/trips/${enc(trip)}/alarms`), api(`/api/trips/${enc(trip)}/summary`)]);
@@ -298,8 +572,18 @@ async function selectTrip(trip) {
   S.ov = ov.value || { boxes: [], anchors: [], counts: { ok: 0, alarm: 0, missing: 0 }, message: `零件框读取失败：${ov.reason?.message}` };
   S.alarms = al.value || { rows: [], types: {}, message: `告警读取失败：${al.reason?.message}` };
   S.summary = sm.value || null;
-  renderOverlay(); renderAlarms(); renderTicks(); renderStatus();
+  S.cmpRef = S.ov.compare_ref || null;
+  if (S.cmpRef && !S.cmpRef.is_template_trip && S.cmpRef.template_trip) {
+    S.tplTrip = S.cmpRef.template_trip;
+    const [ti, tov] = await Promise.allSettled([
+      api(`/api/trips/${enc(S.tplTrip)}`), api(`/api/trips/${enc(S.tplTrip)}/overlay`)]);
+    if (tok !== S.tok) return;
+    S.tplInfo = ti.value || null;
+    S.tplOv = tov.value || null;
+  }
+  renderOverlay(); renderAlarms(); renderPartsFilterOpts(); renderPartsList(); renderTicks(); renderStatus();
   renderSummary(sm.value, sm.reason);
+  updateCmpUI();
 }
 
 function renderStatus() {
@@ -309,14 +593,21 @@ function renderStatus() {
     const v = sm.qc.verdict;
     chips.push(`<span class="chip ${v === 'pass' ? 'ok' : v === 'warn' ? 'warn' : 'bad'}">质检 <b>${VERDICT[v] || v}</b></span>`);
   } else if (sm) chips.push('<span class="chip">质检 <b>未运行</b></span>');
-  if (S.info) chips.push(`<span class="chip opt">编组 <b>${S.info.cars.length} 节</b></span>`);
+  if (ov?.template_ver && ov?.template_trip) {
+    chips.push(`<span class="chip tpl opt">标准模板 <b>${esc(ov.template_ver)} · ${esc(ov.template_trip)}</b></span>`);
+  }
   if (sm?.align) {
     const r = sm.align.residual_px;
     const v = r && typeof r === 'object' ? r.p95 : r;
-    chips.push(`<span class="chip opt">对齐残差 p95 <b>${fmt(v, 1)} px</b></span>`);
-  } else if (ov?.template_trip && ov.template_trip === S.trip) chips.push('<span class="chip opt">对齐 <b>模板趟</b></span>');
-  else if (sm) chips.push('<span class="chip opt">对齐 <b>未运行</b></span>');
-  if (ov) chips.push(`<span class="chip">零件 <b>${ov.boxes.length}</b></span>`);
+    chips.push(`<span class="chip opt">对齐 p95 <b>${fmt(v, 1)} px</b></span>`);
+  }
+  if (ov) {
+    const tot = ov.boxes.length;
+    const ok = ov.counts?.ok || 0;
+    const pct = tot ? `${fmt(ok / tot * 100, 1)}%` : '—';
+    chips.push(`<span class="chip">零件 <b>${tot}</b></span>`);
+    if (tot) chips.push(`<span class="chip ok opt">正常率 <b>${pct}</b></span>`);
+  }
   if (al) {
     const n = al.rows.length;
     chips.push(`<span class="chip ${n ? 'warn' : ''}">告警 <b>${al.message && !n ? '—' : n}</b></span>`);
@@ -333,7 +624,7 @@ function setTab(name) {
 }
 $$('.side-tabs button').forEach(b => { b.onclick = () => { closeDetail(); setTab(b.dataset.tab); }; });
 
-/* ---------------- 告警 ---------------- */
+/* ---------------- 告警与一键巡检 ---------------- */
 
 function carOf(xy) {
   if (!xy || !S.info) return null;
@@ -351,12 +642,36 @@ function metricLine(r) {
   return out.join(' · ');
 }
 
+function filteredAlarms() {
+  const rows = S.alarms?.rows || [];
+  return rows.filter(r => S.filter === 'all' || r.alarms.includes(S.filter));
+}
+
+function updateAlarmTour() {
+  const rows = filteredAlarms();
+  const bar = $('#alarmTour');
+  bar.hidden = rows.length === 0;
+  if (!rows.length) return;
+  const idx = rows.findIndex(r => r.code === S.sel);
+  $('#alarmTourIdx').textContent = idx >= 0 ? `第 ${idx + 1} / ${rows.length} 条` : `共 ${rows.length} 条告警`;
+}
+
+function stepAlarm(delta) {
+  const rows = filteredAlarms();
+  if (!rows.length) return;
+  const idx = rows.findIndex(r => r.code === S.sel);
+  const next = idx < 0 ? (delta > 0 ? 0 : rows.length - 1) : (idx + delta + rows.length) % rows.length;
+  selectPart(rows[next].code, true);
+}
+$('#btnPrevAlarm').onclick = () => stepAlarm(-1);
+$('#btnNextAlarm').onclick = () => stepAlarm(1);
+
 function renderAlarms() {
   const A = S.alarms, list = $('#alarmList'), filters = $('#alarmFilters');
   $('#alarmBadge').textContent = A?.rows.length || '';
-  if (!A) { filters.innerHTML = ''; list.innerHTML = '<div class="empty">读取中…</div>'; return; }
+  if (!A) { filters.innerHTML = ''; $('#alarmTour').hidden = true; list.innerHTML = '<div class="empty">读取中…</div>'; return; }
   if (!A.rows.length) {
-    filters.innerHTML = '';
+    filters.innerHTML = ''; $('#alarmTour').hidden = true;
     list.innerHTML = A.message
       ? `<div class="empty"><b>暂无告警数据</b><small>${esc(A.message)}</small></div>`
       : '<div class="empty"><b>本趟没有告警</b><small>全部零件的对比指标都在阈值内</small></div>';
@@ -365,7 +680,7 @@ function renderAlarms() {
   const types = Object.entries(A.types).sort((a, b) => b[1] - a[1]);
   filters.innerHTML = [['all', A.rows.length], ...types].map(([t, n]) =>
     `<button data-f="${esc(t)}" class="${S.filter === t ? 'on' : ''}">${t === 'all' ? '全部' : esc(alarmLabel(t))}<em>${n}</em></button>`).join('');
-  const rows = A.rows.filter(r => S.filter === 'all' || r.alarms.includes(S.filter));
+  const rows = filteredAlarms();
   list.innerHTML = (A.message ? `<div class="note" style="margin:0 0 6px">${esc(A.message)}</div>` : '') + rows.map(r => {
     const car = carOf(r.xy);
     const sub = [car ? `第 ${car} 节` : null, metricLine(r) || null, r.rect ? null : '无位置'].filter(Boolean).join(' · ');
@@ -375,6 +690,7 @@ function renderAlarms() {
       `<div class="l2">${esc(sub)}</div></div>` +
       `<div class="tags">${r.alarms.map(a => `<span class="tag ${a === 'missing' ? 'missing' : 'alarm'}">${esc(alarmLabel(a))}</span>`).join('')}</div></div>`;
   }).join('');
+  updateAlarmTour();
 }
 $('#alarmFilters').addEventListener('click', e => {
   const b = e.target.closest('button');
@@ -385,19 +701,111 @@ $('#alarmList').addEventListener('click', e => {
   if (it) selectPart(it.dataset.code, true);
 });
 
-/* ---------------- 零件详情 ---------------- */
+/* ---------------- 全部零件检索与筛选 ---------------- */
+
+function renderPartsFilterOpts() {
+  const boxes = S.ov?.boxes || [];
+  $('#partsBadge').textContent = boxes.length || '';
+  const cars = [...new Set(boxes.map(b => b.car ?? carOf(b.xy)).filter(v => v != null))].sort((a, b) => a - b);
+  const types = new Map();
+  for (const b of boxes) {
+    const k = b.type || b.type_name || '';
+    if (k && !types.has(k)) types.set(k, b.type_name || k);
+  }
+  $('#partCar').innerHTML = '<option value="">全部车厢</option>' + cars.map(c => `<option value="${c}">第 ${c} 节</option>`).join('');
+  $('#partType').innerHTML = '<option value="">全部类型</option>' + [...types.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'))
+    .map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
+  $('#partQuery').value = '';
+  $('#partStatus').value = '';
+  S.partLimit = 200;
+}
+
+function renderPartsList() {
+  const boxes = S.ov?.boxes || [];
+  const list = $('#partList'), meta = $('#partMeta');
+  if (!boxes.length) {
+    meta.textContent = '';
+    list.innerHTML = '<div class="empty"><b>暂无零件</b><small>本趟尚未识别出零件</small></div>';
+    return;
+  }
+  const q = $('#partQuery').value.trim().toLowerCase();
+  const carVal = $('#partCar').value;
+  const typeVal = $('#partType').value;
+  const stVal = $('#partStatus').value;
+  const matched = boxes.filter(b => {
+    const c = b.car ?? carOf(b.xy);
+    if (carVal && String(c) !== carVal) return false;
+    if (typeVal && (b.type || b.type_name || '') !== typeVal) return false;
+    if (stVal && b.status !== stVal) return false;
+    if (q) {
+      const hay = `${b.code} ${b.type || ''} ${b.type_name || ''} ${c ? `第${c}节` : ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const shown = matched.slice(0, S.partLimit);
+  meta.innerHTML = `<span>匹配 <b>${matched.length}</b> / ${boxes.length} 个零件</span>` +
+    (q || carVal || typeVal || stVal ? '<a href="#" id="partReset" style="color:var(--accent);text-decoration:none">清空筛选</a>' : '');
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty"><b>没有匹配的零件</b><small>换个关键词或筛选条件试试</small></div>';
+    return;
+  }
+  list.innerHTML = shown.map(b => {
+    const c = b.car ?? carOf(b.xy);
+    const sub = [c ? `第 ${c} 节` : null, b.zone || null, b.rect ? `${Math.round(b.rect[2])}×${Math.round(b.rect[3])} px` : null].filter(Boolean).join(' · ');
+    return `<div class="item ${b.code === S.sel ? 'sel' : ''}" data-code="${esc(b.code)}">` +
+      `<i class="bar ${b.status}"></i>` +
+      `<div><div class="l1"><span class="mono">${esc(b.code)}</span><span>${esc(b.type_name || b.type || '')}</span></div>` +
+      `<div class="l2">${esc(sub)}</div></div>` +
+      `<div class="tags"><span class="tag ${b.status}">${STATUS[b.status]}</span></div></div>`;
+  }).join('') + (matched.length > shown.length
+    ? `<button type="button" class="ghost load-more" id="btnLoadMore">加载更多（还有 ${matched.length - shown.length} 个）</button>` : '');
+}
+
+['partQuery', 'partCar', 'partType', 'partStatus'].forEach(id => {
+  $(`#${id}`).addEventListener('input', () => { S.partLimit = 200; renderPartsList(); });
+  $(`#${id}`).addEventListener('change', () => { S.partLimit = 200; renderPartsList(); });
+});
+$('#partMeta').addEventListener('click', e => {
+  if (e.target.id === 'partReset') {
+    e.preventDefault();
+    $('#partQuery').value = ''; $('#partCar').value = ''; $('#partType').value = ''; $('#partStatus').value = '';
+    S.partLimit = 200; renderPartsList();
+  }
+});
+$('#partList').addEventListener('click', e => {
+  if (e.target.id === 'btnLoadMore') { S.partLimit += 200; renderPartsList(); return; }
+  const it = e.target.closest('.item');
+  if (it) selectPart(it.dataset.code, true);
+});
+
+/* ---------------- 零件与异物详情 ---------------- */
 
 function findRow(code) { return S.byCode.get(code) || S.alarms?.rows.find(r => r.code === code); }
 
 function markSel() {
-  $$('rect.sel', gBox).forEach(r => r.classList.remove('sel'));
-  gSel.replaceChildren();
-  $$('#alarmList .item').forEach(i => i.classList.toggle('sel', i.dataset.code === S.sel));
+  $$('.sel', gBox).forEach(r => r.classList.remove('sel'));
+  $$('.sel', gTplBox).forEach(r => r.classList.remove('sel'));
+  gSel.replaceChildren(); gTplSel.replaceChildren();
+  $$('#alarmList .item, #partList .item').forEach(i => i.classList.toggle('sel', i.dataset.code === S.sel));
+  updateAlarmTour();
   if (!S.sel) return;
-  const el = gBox.querySelector(`rect[data-code="${CSS.escape(S.sel)}"]`);
-  if (el) { el.classList.add('sel'); gBox.appendChild(el); return; }
-  const r = findRow(S.sel);
-  if (r?.rect) gSel.append(rectEl(r.rect, `st-${r.status} sel`, null));
+  const el = gBox.querySelector(`[data-code="${CSS.escape(S.sel)}"]`);
+  if (el) { el.classList.add('sel'); gBox.appendChild(el); }
+  else {
+    const r = findRow(S.sel);
+    if (r?.rect) gSel.append(partEl({ ...r, code: null }, `st-${r.status} sel`));
+  }
+  /* 下半屏标准模板同步高亮同一零件 */
+  if (cmpMode === 'template') {
+    const tel = gTplBox.querySelector(`[data-code="${CSS.escape(S.sel)}"]`);
+    if (tel) { tel.classList.add('sel'); gTplBox.appendChild(tel); }
+    else {
+      const tb = S.tplByCode.get(S.sel);
+      if (tb?.rect) gTplSel.append(partEl({ ...tb, code: null }, 'st-tpl sel'));
+    }
+  }
 }
 
 function selectPart(code, jump) {
@@ -432,12 +840,37 @@ async function openDetail(code, row) {
   }
 }
 
+function pairBlock(tplUrl, tripUrl, tplSub, tripSub, tplWhy, tripWhy, modalTitle, modalSub) {
+  const zoomable = tplUrl && tripUrl;
+  const zCls = zoomable ? 'zoomable' : '';
+  const dataAttr = zoomable
+    ? ` data-cmp-tpl="${esc(tplUrl)}" data-cmp-trip="${esc(tripUrl)}" data-cmp-title="${esc(modalTitle)}" data-cmp-sub="${esc(modalSub)}"`
+    : '';
+  const fig = (url, cap, sub, why) => `<figure class="${zCls}"${dataAttr}>${url ? `<img src="${url}" alt="${cap}" loading="lazy">` : `<div class="noimg">${why}</div>`}` +
+    `<figcaption><span>${cap}</span><span class="mono">${esc(sub)}</span></figcaption></figure>`;
+  let h = '<div class="pair">' +
+    fig(tplUrl, '标准模板', tplSub, tplWhy) +
+    fig(tripUrl, '本趟识别', tripSub, tripWhy) + '</div>';
+  if (zoomable) {
+    h += `<div class="pair-hint"><span>点图片可放大 / 卷帘对比</span><button type="button" class="ghost sm" data-open-cmp="1"${dataAttr}>大图卷帘对比</button></div>`;
+  }
+  return h;
+}
+
 function foreignDetail(r) {
-  return `<div class="sec-title">异物</div><dl class="kv">` +
-    `<dt>面积</dt><dd class="mono">${fmt(r.metrics?.area)}</dd>` +
-    `<dt>位置</dt><dd class="mono">${r.xy ? `x ${fmt(r.xy[0])}–${fmt(r.xy[2])}  y ${fmt(r.xy[1])}–${fmt(r.xy[3])}` : '无（缺对齐映射）'}</dd>` +
+  const idx = r.idx;
+  const fcrop = side => OFF ? `data/${enc(S.trip)}/crops/foreign_${idx}_${side}.jpg`
+    : `/api/trips/${enc(S.trip)}/foreign/${idx}/crop.jpg?side=${side}`;
+  const tplUrl = idx && r.crops?.template ? fcrop('template') : null;
+  const tripUrl = idx && r.crops?.trip ? fcrop('trip') : null;
+  const tplSub = S.ov?.template_trip ? `${S.ov.template_ver || ''} · ${S.ov.template_trip}` : '标准模板';
+  let h = pairBlock(tplUrl, tripUrl, tplSub, S.trip, '模板无此区域', '无位置映射', r.code, '异物告警 · 标准模板同位置 vs 本趟');
+  h += '<div class="sec-title">异物信息</div><dl class="kv">' +
+    `<dt>差异面积</dt><dd class="mono">${fmt(r.metrics?.area)} px²</dd>` +
+    `<dt>位置（趟）</dt><dd class="mono">${r.xy ? `x ${fmt(r.xy[0])}–${fmt(r.xy[2])}<br>y ${fmt(r.xy[1])}–${fmt(r.xy[3])}` : '无（缺对齐映射）'}</dd>` +
     `<dt>车厢</dt><dd>${carOf(r.xy) ? `第 ${carOf(r.xy)} 节` : '—'}</dd></dl>` +
-    '<div class="note">零件框外的大片差异，需人工复核。</div>';
+    '<div class="note">零件框外出现大片异常差异，建议结合卷帘对比人工复核。</div>';
+  return h;
 }
 
 const kv = rows => `<dl class="kv">${rows.filter(r => r[1] != null && r[1] !== '').map(([k, v, mono]) =>
@@ -454,11 +887,12 @@ function partDetail(d) {
   const r = d.record, tp = d.template?.part || {}, inst = d.instance || {}, c = d.compare;
   const crop = side => OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_${side}.jpg`
     : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=${side}`;
-  const fig = (ok, side, cap, sub, why) => `<figure>${ok ? `<img src="${crop(side)}" alt="${cap}" loading="lazy">` : `<div class="noimg">${why}</div>`}` +
-    `<figcaption><span>${cap}</span><span class="mono">${esc(sub)}</span></figcaption></figure>`;
-  let h = '<div class="pair">' +
-    fig(d.crops.template, 'template', '模板', d.template ? `${d.template.version} · ${d.template.trip}` : '—', '模板里没有这个零件') +
-    fig(d.crops.trip, 'trip', '本趟', S.trip, r.status === 'missing' ? '未找到（缺失候选）' : '没有位置') + '</div>';
+  const tplUrl = d.crops.template ? crop('template') : null;
+  const tripUrl = d.crops.trip ? crop('trip') : null;
+  const tplSub = d.template ? `${d.template.version} · ${d.template.trip}` : '—';
+  let h = pairBlock(tplUrl, tripUrl, tplSub, S.trip, '模板里没有这个零件',
+    r.status === 'missing' ? '未找到（缺失候选）' : '没有位置',
+    r.code, `${r.type_name || r.type || ''} · 标准模板 (${tplSub}) vs 本趟 (${S.trip})`);
 
   h += '<div class="sec-title">对比指标</div>';
   if (c) {
@@ -502,10 +936,86 @@ function partDetail(d) {
   if (hs) h += `<div class="note">数据来源：${esc(hs.source)}${hs.note ? `（${esc(hs.note)}）` : ''}</div>`;
   return h;
 }
+
 $('#detailBody').addEventListener('click', e => {
   const a = e.target.closest('[data-goto]');
-  if (a) { e.preventDefault(); selectPart(a.dataset.goto, true); }
+  if (a) { e.preventDefault(); selectPart(a.dataset.goto, true); return; }
+  const z = e.target.closest('[data-cmp-tpl]');
+  if (z) {
+    openCmpModal({
+      tpl: z.dataset.cmpTpl, trip: z.dataset.cmpTrip,
+      title: z.dataset.cmpTitle, sub: z.dataset.cmpSub, mode: 'curtain',
+    });
+  }
 });
+
+/* ---------------- 大图卷帘 / 并排 / 闪烁对比弹窗 ---------------- */
+
+function openCmpModal(m) {
+  S.modal = m;
+  $('#mTitle').textContent = m.title || '';
+  $('#mSub').textContent = m.sub || '';
+  $('#cmpModal').hidden = false;
+  renderCmpModal();
+}
+
+function closeCmpModal() {
+  $('#cmpModal').hidden = true;
+  S.modal = null;
+}
+
+function renderCmpModal() {
+  const m = S.modal;
+  if (!m) return;
+  $$('#mMode button').forEach(b => b.classList.toggle('on', b.dataset.m === m.mode));
+  const body = $('#mBody');
+  if (m.mode === 'curtain') {
+    body.innerHTML =
+      `<div class="curtain" id="curtainBox">` +
+      `<img src="${esc(m.trip)}" alt="本趟识别">` +
+      `<img class="top-layer" src="${esc(m.tpl)}" alt="标准模板">` +
+      `<div class="c-line"></div><div class="c-knob">⇄</div>` +
+      `<span class="c-lbl l">标准模板</span><span class="c-lbl r">本趟识别</span></div>` +
+      `<input type="range" class="curtain-range" id="curtainRange" min="0" max="100" value="50">` +
+      `<div class="note">左右拖动滑块或直接在图上划动，对比标准模板（左）与本趟识别（右）的细微差异</div>`;
+    const box = $('#curtainBox'), rng = $('#curtainRange');
+    const setPos = p => {
+      const v = Math.max(0, Math.min(100, p));
+      box.style.setProperty('--pos', `${v}%`);
+      rng.value = Math.round(v);
+    };
+    rng.oninput = () => setPos(+rng.value);
+    let drag = false;
+    const at = e => { const r = box.getBoundingClientRect(); return (e.clientX - r.left) / r.width * 100; };
+    box.addEventListener('pointerdown', e => { drag = true; box.setPointerCapture(e.pointerId); setPos(at(e)); });
+    box.addEventListener('pointermove', e => { if (drag) setPos(at(e)); });
+    box.addEventListener('pointerup', () => { drag = false; });
+  } else if (m.mode === 'side') {
+    body.innerHTML =
+      `<div class="side-big">` +
+      `<figure><img src="${esc(m.tpl)}" alt="标准模板"><figcaption><span>标准模板</span></figcaption></figure>` +
+      `<figure><img src="${esc(m.trip)}" alt="本趟识别"><figcaption><span>本趟识别</span></figcaption></figure></div>`;
+  } else {
+    body.innerHTML =
+      `<div class="flip-box" id="flipBox">` +
+      `<img id="flipImg" src="${esc(m.trip)}" alt="对比图">` +
+      `<span class="c-lbl" id="flipLbl" style="color:var(--ok)">当前显示：本趟识别（按住鼠标看标准模板）</span></div>` +
+      `<div class="note">按住图片不放切换为标准模板，松开恢复本趟识别，适合人眼快速捕捉位移和异物</div>`;
+    const fb = $('#flipBox'), img = $('#flipImg'), lbl = $('#flipLbl');
+    const showTpl = () => { img.src = m.tpl; lbl.textContent = '当前显示：标准模板（松开恢复本趟）'; lbl.style.color = 'var(--tpl)'; };
+    const showTrip = () => { img.src = m.trip; lbl.textContent = '当前显示：本趟识别（按住鼠标看标准模板）'; lbl.style.color = 'var(--ok)'; };
+    fb.addEventListener('pointerdown', showTpl);
+    fb.addEventListener('pointerup', showTrip);
+    fb.addEventListener('pointerleave', showTrip);
+  }
+}
+
+$('#mMode').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (b && S.modal) { S.modal.mode = b.dataset.m; renderCmpModal(); }
+});
+$('#mClose').onclick = closeCmpModal;
+$('#cmpModal').addEventListener('click', e => { if (e.target === $('#cmpModal')) closeCmpModal(); });
 
 /* ---------------- 质检与对齐 ---------------- */
 
@@ -660,23 +1170,31 @@ $('#chatForm').addEventListener('submit', async e => {
   }
 });
 
-/* ---------------- 键盘 ---------------- */
+/* ---------------- 键盘快捷键 ---------------- */
 
 document.addEventListener('keydown', e => {
-  if (e.target.closest('input, textarea') || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === 'Escape') closeDetail();
-  else if (!ready()) return;
-  else if (/^[1-9]$/.test(e.key)) jumpCar(+e.key);
+  if (e.target.closest('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'Escape') {
+    if (S.modal) closeCmpModal(); else closeDetail();
+    return;
+  }
+  if (S.modal) return;
+  if (e.key === 'b' || e.key === 'B') { toggleSide(); return; }
+  if (e.key === '[') { stepAlarm(-1); return; }
+  if (e.key === ']') { stepAlarm(1); return; }
+  if (!ready()) return;
+  if (/^[1-9]$/.test(e.key)) jumpCar(+e.key);
   else if (e.key === 'h' || e.key === 'H') $('#btnFitH').click();
-  else if (e.key === '0') viewer.viewport.goHome();
+  else if (e.key === '0') { leader = viewer; viewer.viewport.goHome(); }
   else if (e.key === '+' || e.key === '=') $('#btnZoomIn').click();
   else if (e.key === '-') $('#btnZoomOut').click();
 });
 
-if (OFF) {   // 离线包没有后端：不显示处理新趟和智能体
+if (OFF) {
   $$('.side-tabs button[data-tab="process"], .side-tabs button[data-tab="chat"], #pane-process, #pane-chat')
     .forEach(el => { el.hidden = true; });
-  $('.brand-text small').textContent = '离线浏览包 · 只读';
+  $('.brand-text small').textContent = '离线浏览包 · 标准模板比对';
+  fetch('ocr.html', { method: 'HEAD' }).then(r => { if (r.ok) $('#ocrLink').hidden = false; })
+    .catch(() => { $('#ocrLink').hidden = false; });
 }
 loadTrips();
-

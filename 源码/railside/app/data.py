@@ -199,6 +199,27 @@ class Context:
         x0, y0, x1, y1 = xy
         return [float(display_x(x1 - 1, self.x0, self.x1)), y0, x1 - x0, y1 - y0]
 
+    def poly_xy(self, tp, inst):
+        """零件轮廓（趟坐标点列）。本趟实例的 poly_xy 优先；模板趟用模板的 poly_uv 平移；
+        其他趟只有 poly_uv 时按对齐映射逐点换算。没有就返回 None（前端退回画框）。"""
+        if inst and inst.get('poly_xy') and not self.is_tpl_trip:
+            return [[float(x), float(y)] for x, y in inst['poly_xy']]
+        src = tp if (self.is_tpl_trip and tp) else inst
+        pts = (src or {}).get('poly_uv')
+        if not pts:
+            return None
+        if self.is_tpl_trip:
+            hx = self.tpl['head_x']
+            return [[float(u) + hx, float(v)] for u, v in pts]
+        if self.amap is None:
+            return None
+        xs, ys = self.amap.to_trip([p[0] for p in pts], [p[1] for p in pts])
+        return [[float(x), float(y)] for x, y in zip(xs, ys)]
+
+    def poly_display(self, pts):
+        """趟坐标点 → 翻转显示图坐标，和 rect() 同一个约定：趟坐标 x 落在显示图的 x1 − x。"""
+        return [[round(self.x1 - x, 1), round(y, 1)] for x, y in pts]
+
     def record(self, code, tp=None, inst=None):
         tp = tp if tp is not None else self.tpl_parts.get(code)
         inst = inst if inst is not None else self.insts.get(code)
@@ -216,10 +237,13 @@ class Context:
         if status == 'missing' and 'missing' not in alarms:
             alarms = ['missing', *alarms]
         typ = src.get('type')
+        # 父件（转向架、车下设备箱）本来就按框标，仍画框；其余零件有轮廓就画轮廓
+        pts = self.poly_xy(tp, inst) if xy and typ not in ('BOGIE', 'EQUIP') else None
         return {
             'code': code, 'type': typ, 'type_name': self.names.get(typ, typ), 'parent': src.get('parent'),
             'car': src.get('car'), 'zone': src.get('zone'), 'status': status, 'alarms': alarms,
             'xy': xy, 'rect': self.rect(xy) if xy else None,
+            'poly': self.poly_display(pts) if pts and len(pts) >= 3 else None,
         }
 
     def records(self):
@@ -260,6 +284,37 @@ def anchor_boxes(ctx):
     return out
 
 
+def _compare_ref(ctx):
+    """标准模板对比所需的坐标映射与模板趟元信息（供前端双屏对齐联动）。"""
+    tpl = ctx.tpl
+    if not tpl or not tpl.get('trip'):
+        return None
+    tpl_trip = tpl['trip']
+    tpl_m = trip_file(tpl_trip, 'manifest.json')
+    if not tpl_m:
+        return None
+    tpl_x0, tpl_x1 = int(tpl_m['train_x0']), int(tpl_m['train_x1'])
+    tpl_hx = float(tpl.get('head_x', tpl_x0))
+    ref = {
+        'template_trip': tpl_trip,
+        'template_ver': tpl.get('version'),
+        'is_template_trip': ctx.is_tpl_trip,
+        'tpl_width': tpl_x1 - tpl_x0,
+        'tpl_height': H,
+        'map': None,
+    }
+    if not ctx.is_tpl_trip and ctx.align and len(ctx.align.get('g') or []) >= 2:
+        pts = []
+        for p in ctx.align['g']:
+            xd_trip = float(display_x(p['x'], ctx.x0, ctx.x1))
+            xd_tpl = float(display_x(p['u'] + tpl_hx, tpl_x0, tpl_x1))
+            dy = float(p.get('dy', 0.0))
+            pts.append([round(xd_trip, 1), round(xd_tpl, 1), round(dy, 1)])
+        pts.sort(key=lambda r: r[0])
+        ref['map'] = pts
+    return ref
+
+
 def overlay(trip):
     ctx = Context(trip)
     source, recs = ctx.records()
@@ -280,6 +335,7 @@ def overlay(trip):
         msg = f'{len(recs) - len(boxes)} 个零件没有位置（缺 bbox 且无对齐映射），未画出'
     return {'trip': trip, 'source': source, 'message': msg, 'counts': counts,
             'template_ver': (ctx.tpl or {}).get('version'), 'template_trip': (ctx.tpl or {}).get('trip'),
+            'compare_ref': _compare_ref(ctx),
             'boxes': boxes, 'anchors': anchors}
 
 
@@ -291,10 +347,13 @@ def alarms(trip):
     ctx = Context(trip)
     source, recs = ctx.records()
     rows = [{**r, 'kind': 'part', 'metrics': _metrics(ctx.cmp_items.get(r['code']))} for r in recs if r['status'] != 'ok']
+    tpl_ok = bool(ctx.tpl and ctx.tpl.get('trip') and (io.trip_dir(ctx.tpl['trip']) / 'manifest.json').exists())
     for i, f in enumerate((ctx.cmp or {}).get('foreign') or [], 1):
-        xy = ctx.uv_to_xy(f['bbox_uv']) if f.get('bbox_uv') and (ctx.is_tpl_trip or ctx.amap) else None
-        rows.append({'code': f'异物-{i:02d}', 'kind': 'foreign', 'type': 'FOREIGN', 'type_name': '异物', 'parent': None,
+        uv = f.get('bbox_uv')
+        xy = ctx.uv_to_xy(uv) if uv and (ctx.is_tpl_trip or ctx.amap) else None
+        rows.append({'code': f'异物-{i:02d}', 'idx': i, 'kind': 'foreign', 'type': 'FOREIGN', 'type_name': '异物', 'parent': None,
                      'status': 'alarm', 'alarms': ['foreign'], 'xy': xy, 'rect': ctx.rect(xy) if xy else None,
+                     'crops': {'template': bool(uv and tpl_ok), 'trip': xy is not None},
                      'metrics': {'area': f.get('area')}})
     types = {}
     for r in rows:
@@ -391,6 +450,30 @@ def crop(trip, code, side):
         if rec['xy'] is None:
             raise NotFound(f'{trip} 的 {code} 没有位置')
         src_trip, xy, color = trip, rec['xy'], STATUS_COLOR[rec['status']]
+    else:
+        raise BadRequest(f'side 只能是 template 或 trip：{side}')
+    check_trip(src_trip)
+    return _crop(str(io.trip_dir(src_trip)), src_trip, tuple(int(round(v)) for v in xy), color)
+
+
+def foreign_crop(trip, idx, side):
+    """异物局部对比图 JPEG（翻转显示，框出异物区域）。idx 从 1 起，side = template | trip。"""
+    ctx = Context(trip)
+    items = (ctx.cmp or {}).get('foreign') or []
+    if idx < 1 or idx > len(items):
+        raise NotFound(f'{trip} 没有异物-{idx:02d}')
+    uv = items[idx - 1].get('bbox_uv')
+    if not uv:
+        raise NotFound(f'{trip} 的异物-{idx:02d} 没有位置')
+    if side == 'template':
+        if not ctx.tpl or not ctx.tpl.get('trip'):
+            raise NotFound('没有对应的标准模板')
+        src_trip, xy, color = ctx.tpl['trip'], ctx.uv_to_xy(uv, tpl_trip=True), TEMPLATE_COLOR
+    elif side == 'trip':
+        xy = ctx.uv_to_xy(uv)
+        if xy is None:
+            raise NotFound(f'{trip} 的异物-{idx:02d} 无法映射到本趟坐标')
+        src_trip, color = trip, STATUS_COLOR['alarm']
     else:
         raise BadRequest(f'side 只能是 template 或 trip：{side}')
     check_trip(src_trip)
