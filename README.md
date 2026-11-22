@@ -15,9 +15,9 @@
 
 <br>
 
-<img src="docs/assets/hero-dual-compare.png" alt="实拍转向架双屏标准模板对齐比对与实时联动十字准星" width="100%">
+<img src="docs/assets/hero-dual-compare.png" alt="全列 6 节实拍转向架双屏标准模板对齐比对与实时联动十字准星" width="100%">
 
-<sub>*以上界面为脱敏实拍转向架线阵影像的双屏标准模板比对实景（人工精修轮廓、跨趟中位对齐误差 1.4 px ≈ 0.33 mm，不含任何线路、车号或运营单位信息）。*</sub>
+<sub>*以上界面为脱敏全列 6 节实拍线阵影像（车内 499,039 × 4,096 px，1:1 原图金字塔）的双屏标准模板比对实景：覆盖 12 台转向架与车下设备箱共 546 个手工精修目标，跨趟中位对齐误差 2.41 px ≈ 0.55 mm，不含任何线路、车号或运营单位信息。*</sub>
 
 </div>
 
@@ -75,8 +75,8 @@ flowchart TB
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/modal-curtain-compare.png" alt="实拍轴箱大图卷帘对比弹窗" width="100%">
-      <p align="center"><b>实拍轴箱大图卷帘 / 差异高亮对比</b><br><sub>支持标准模板（左）与本趟识别（右）像素级卷帘划动、并排对照、按住闪烁切换与逐像素差值高亮，细微位移与转角一目了然</sub></p>
+      <img src="docs/assets/modal-curtain-compare.png" alt="实拍测速轴端 1:1 大图卷帘对比弹窗" width="100%">
+      <p align="center"><b>实拍测速轴端 1:1 大图卷帘 / 差异高亮对比</b><br><sub>支持标准模板（左蓝）与本趟识别（右绿）像素级卷帘划动、并排对照、按住闪烁切换与逐像素差值高亮，细微位移与转角一目了然</sub></p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/printable-report.png" alt="实拍 6 节编组可打印巡检报告预览" width="100%">
@@ -85,8 +85,8 @@ flowchart TB
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <img src="docs/assets/dashboard-overview.png" alt="实拍 6 节整车无遮挡双屏联动与巡检概览看板" width="100%">
-      <p align="center"><b>6 节整车双屏联动对齐与巡检概览看板</b><br><sub>完整支持 51 万像素级 6 节编组超长图无缝缩放与联动准星定位（跨趟中位误差 4.2 px ≈ 0.95 mm），右侧聚合 886 个零件的分车厢健康度与类别统计</sub></p>
+      <img src="docs/assets/dashboard-overview.png" alt="1:1 原始分辨率深度放大双屏联动与逐件指标核查" width="100%">
+      <p align="center"><b>1:1 原始清晰度深度缩放与逐件量化核查</b><br><sub>基于 0–19 层原图金字塔实现单颗紧固螺栓与铸件纹理级双屏联动放大，右侧同步呈现外观相似度（NCC）、毫米级偏移与转角量化指标</sub></p>
     </td>
   </tr>
 </table>

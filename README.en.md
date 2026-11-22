@@ -15,9 +15,9 @@
 
 <br>
 
-<img src="docs/assets/hero-dual-compare.png" alt="Synchronized Dual-Pane Real Bogie Inspection vs Standard Template Comparison" width="100%">
+<img src="docs/assets/hero-dual-compare.png" alt="Full 6-Car Synchronized Dual-Pane Real Bogie Inspection vs Standard Template Comparison" width="100%">
 
-<sub>*Anonymized real underframe bogie line-scan imagery rendered live in synchronized dual-pane template comparison mode (hand-refined contours, 1.4 px ≈ 0.33 mm cross-trip alignment; zero operator, line, or vehicle identifiers).*</sub>
+<sub>*Anonymized full 6-car real line-scan imagery (499,039 × 4,096 px, 1:1 native pyramid) rendered live in synchronized dual-pane template comparison mode: 546 hand-refined targets across 12 bogies and underframe boxes, 2.41 px ≈ 0.55 mm cross-trip alignment; zero operator, line, or vehicle identifiers.*</sub>
 
 </div>
 
@@ -75,8 +75,8 @@ flowchart TB
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/modal-curtain-compare.png" alt="Real Axlebox Curtain Slider Comparison Modal" width="100%">
-      <p align="center"><b>Real Axlebox Curtain Slider &amp; Pixel Diff Lightbox</b><br><sub>Compare standard template (left) vs. inspected trip (right) via pixel-aligned curtain swipe, side-by-side, hold-to-flip, or live difference highlighting</sub></p>
+      <img src="docs/assets/modal-curtain-compare.png" alt="Real Speed-Sensor Axle 1:1 Curtain Slider Comparison Modal" width="100%">
+      <p align="center"><b>Real Speed-Sensor Axle 1:1 Curtain Slider &amp; Pixel Diff</b><br><sub>Compare standard template (left cyan) vs. inspected trip (right green) via pixel-aligned curtain swipe, side-by-side, hold-to-flip, or live difference highlighting</sub></p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/printable-report.png" alt="6-Car Real Printable Inspection Report Preview" width="100%">
@@ -85,8 +85,8 @@ flowchart TB
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <img src="docs/assets/dashboard-overview.png" alt="6-Car Full-Train Dual-Pane Alignment and Inspection Overview Dashboard" width="100%">
-      <p align="center"><b>6-Car Full-Train Alignment &amp; Overview Dashboard</b><br><sub>Seamless deep zoom and synced crosshair over a 510,615 px 6-car scan (4.2 px ≈ 0.95 mm median alignment error) paired with 886-part per-car health and category breakdowns</sub></p>
+      <img src="docs/assets/dashboard-overview.png" alt="1:1 Native Resolution Deep-Zoom Dual-Pane Verification and Per-Part Metrics" width="100%">
+      <p align="center"><b>1:1 Native-Resolution Deep Zoom &amp; Per-Part Quantitative Inspection</b><br><sub>Inspect individual hex bolts and cast-metal surface textures across synchronized panes backed by 0–19 native pyramids, paired with live NCC, millimeter shift, and angle metrics</sub></p>
     </td>
   </tr>
 </table>
