@@ -15,7 +15,7 @@ async function api(path, opts) {
   if (OFF) {
     const key = path.split('?')[0];
     if (opts?.method || !(key in OFF.api)) {
-      const e = new Error('离线浏览包只读，这个功能要用完整应用（双击“启动应用.cmd”）');
+      const e = new Error('当前为静态只读模式，运行流水线或智能体请启动本地应用');
       e.status = 404;
       throw e;
     }
@@ -42,15 +42,30 @@ const ALARM = {
 const alarmLabel = a => ALARM[a] || a;
 const FOUND = { parent: '父件定位', pixel: '像素匹配', topology: '拓扑补漏', missing: '未找到', template: '模板' };
 const JOB = { running: '运行中', ok: '完成', partial: '部分完成', failed: '失败' };
+const REV_LABEL = { confirmed: '确认故障', ignored: '误报忽略' };
 
 const S = {
   trips: [], trip: null, info: null, ov: null, alarms: null, summary: null,
   tplTrip: null, tplInfo: null, tplOv: null, tplByCode: new Map(), cmpRef: null,
   byCode: new Map(), filter: 'all', sel: null, tok: 0, dtok: 0, jobsTimer: null, seenRunning: new Set(),
-  partLimit: 200, modal: null,
+  partLimit: 200, modal: null, didFocusTrip: null, xhairOn: true, bogieIdx: 0,
 };
 
-/* ---------------- 浏览器与双屏叠加层 ---------------- */
+/* ---------------- 人工复核本地记录 ---------------- */
+const REV_KEY = 'railside.reviews';
+let reviews = {};
+try { reviews = JSON.parse(localStorage.getItem(REV_KEY) || '{}') || {}; } catch { reviews = {}; }
+const revKey = (trip, code) => `${trip}::${code}`;
+const getReview = (trip, code) => reviews[revKey(trip, code)] || '';
+function setReview(trip, code, val) {
+  const k = revKey(trip, code);
+  if (val) reviews[k] = val; else delete reviews[k];
+  try { localStorage.setItem(REV_KEY, JSON.stringify(reviews)); } catch { /* 忽略 */ }
+  renderAlarms();
+  if (S.summary) renderSummary(S.summary, null);
+}
+
+/* ---------------- 浏览器、叠加层与双屏同步准星 ---------------- */
 
 function makeViewer(el) {
   return OpenSeadragon({
@@ -67,25 +82,51 @@ function makeViewer(el) {
 const viewer = makeViewer($('#viewer'));
 const viewerCmp = makeViewer($('#viewerCmp'));
 
+function makeXhair(cls) {
+  const g = document.createElementNS(NS, 'g');
+  g.setAttribute('class', `xhair ${cls}`);
+  g.setAttribute('hidden', '');
+  const h = document.createElementNS(NS, 'line');
+  const v = document.createElementNS(NS, 'line');
+  const c = document.createElementNS(NS, 'circle');
+  c.setAttribute('r', '11');
+  g.append(h, v, c);
+  return { g, h, v, c };
+}
+
 const svg = document.createElementNS(NS, 'svg');
 svg.setAttribute('class', 'ov hide-anchor');
 const root = document.createElementNS(NS, 'g');
 const gAnc = document.createElementNS(NS, 'g');
 const gBox = document.createElementNS(NS, 'g');
 const gSel = document.createElementNS(NS, 'g');
+const xhMain = makeXhair('main-x');
 root.append(gAnc, gBox, gSel);
-svg.append(root);
+svg.append(root, xhMain.g);
 viewer.canvas.appendChild(svg);
 
-/* 下半屏（标准模板）独立 SVG 叠加层 */
 const svgCmp = document.createElementNS(NS, 'svg');
 svgCmp.setAttribute('class', 'ov');
 const rootCmp = document.createElementNS(NS, 'g');
 const gTplBox = document.createElementNS(NS, 'g');
 const gTplSel = document.createElementNS(NS, 'g');
+const xhCmp = makeXhair('tpl-x');
 rootCmp.append(gTplBox, gTplSel);
-svgCmp.append(rootCmp);
+svgCmp.append(rootCmp, xhCmp.g);
 viewerCmp.canvas.appendChild(svgCmp);
+
+function showXhair(xh, container, sx, sy) {
+  const w = container.clientWidth, h = container.clientHeight;
+  if (sx < 0 || sx > w || sy < 0 || sy > h) { xh.g.setAttribute('hidden', ''); return; }
+  xh.h.setAttribute('x1', 0); xh.h.setAttribute('y1', sy); xh.h.setAttribute('x2', w); xh.h.setAttribute('y2', sy);
+  xh.v.setAttribute('x1', sx); xh.v.setAttribute('y1', 0); xh.v.setAttribute('x2', sx); xh.v.setAttribute('y2', h);
+  xh.c.setAttribute('cx', sx); xh.c.setAttribute('cy', sy);
+  xh.g.removeAttribute('hidden');
+}
+function hideXhairs() {
+  xhMain.g.setAttribute('hidden', '');
+  xhCmp.g.setAttribute('hidden', '');
+}
 
 function ready() { return S.info && viewer.world.getItemCount() > 0; }
 function cmpReady() { return viewerCmp.world.getItemCount() > 0; }
@@ -115,7 +156,11 @@ function syncCmpOverlay() {
 viewer.addHandler('resize', () => { syncOverlay(); if (cmpMode !== 'off') { leader = viewer; follow(viewer); } });
 viewerCmp.addHandler('resize', () => { if (cmpMode !== 'off') { leader = viewer; follow(viewer); } syncCmpOverlay(); });
 
-viewer.addHandler('open', () => { jumpCar(1, true); syncOverlay(); follow(viewer); });
+viewer.addHandler('open', () => {
+  if (S.ov?.boxes?.length) focusFirstBogie(true); else jumpCar(1, true);
+  syncOverlay();
+  follow(viewer);
+});
 viewer.addHandler('open-failed', e => showViewerEmpty(`长图打不开：${e.message || '未知错误'}`));
 
 for (const v of [viewer, viewerCmp]) {
@@ -184,15 +229,12 @@ function renderTplOverlay() {
 $('#layerCtrl').addEventListener('change', e => {
   const chip = e.target.closest('.lchip');
   if (!chip) return;
-  if (chip.dataset.k === 'tpl') {
-    svgCmp.classList.toggle('hide-tpl', !e.target.checked);
-    return;
-  }
+  if (chip.dataset.k === 'tpl') { svgCmp.classList.toggle('hide-tpl', !e.target.checked); return; }
+  if (chip.dataset.k === 'xhair') { S.xhairOn = e.target.checked; if (!S.xhairOn) hideXhairs(); return; }
   svg.classList.toggle(`hide-${chip.dataset.k}`, !e.target.checked);
 });
 
 /* ---------------- 双屏对比与对齐联动 ---------------- */
-/* 模式：'template'（本趟识别 vs 标准模板，按 align.json 分段映射精准联动）| 'raw'（同趟无标注原图）| 'off'（单屏） */
 const CMP_KEY = 'railside.cmpMode';
 let cmpMode = 'template', leader = viewer, loadedCmpKey = null;
 
@@ -200,7 +242,6 @@ function canTemplateCmp() {
   return Boolean(S.cmpRef && !S.cmpRef.is_template_trip && S.tplInfo && (!OFF || OFF.tiles[S.tplTrip]));
 }
 
-/* 二分分段线性插值（与 Python AlignMap._interp 保持一致） */
 function interpMap(pts, q, colIn, colOut, clampOut = false) {
   const n = pts.length;
   if (!n) return q;
@@ -277,16 +318,11 @@ for (const v of [viewer, viewerCmp]) {
   ['canvas-press', 'canvas-scroll', 'canvas-drag', 'canvas-pinch', 'canvas-double-click']
     .forEach(ev => v.addHandler(ev, () => { leader = v; }));
 }
-viewerCmp.addHandler('open', () => {
-  renderTplOverlay();
-  resyncDual();
-});
+viewerCmp.addHandler('open', () => { renderTplOverlay(); resyncDual(); });
 document.addEventListener('pointerdown', e => { if (!e.target.closest('#viewerCmp')) leader = viewer; }, true);
 document.addEventListener('keydown', () => { leader = viewer; }, true);
 
-function tileSourceFor(trip, info) {
-  return OFF ? offlineTiles(trip) : info.dzi.url;
-}
+function tileSourceFor(trip, info) { return OFF ? offlineTiles(trip) : info.dzi.url; }
 
 function updateCmpUI() {
   const wrap = $('#viewerWrap');
@@ -301,6 +337,7 @@ function updateCmpUI() {
   if (eff === 'template' && !hasTpl) eff = 'raw';
   wrap.classList.toggle('cmp', eff !== 'off');
   $('#chipTplBox').hidden = eff !== 'template';
+  $('#chipXhair').hidden = eff === 'off';
   $$('#cmpSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === eff));
 
   if (eff === 'template') {
@@ -314,7 +351,8 @@ function updateCmpUI() {
 
   if (eff === 'off') {
     if (loadedCmpKey) { viewerCmp.close(); loadedCmpKey = null; }
-    gTplBox.replaceChildren(); gTplSel.replaceChildren();
+    gTplBox.replaceChildren(); gTplSel.replaceChildren(); hideXhairs();
+    resyncDual();
     return;
   }
   const targetTrip = eff === 'template' ? S.tplTrip : S.trip;
@@ -334,7 +372,6 @@ function setCmpMode(mode, persist = true) {
   if (persist) { try { localStorage.setItem(CMP_KEY, mode); } catch { /* 忽略 */ } }
   updateCmpUI();
 }
-
 $('#cmpSeg').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b || b.disabled) return;
@@ -350,9 +387,7 @@ $('#cmpSeg').addEventListener('click', e => {
 (() => {
   const bar = $('#splitBar'), wrap = $('#viewerWrap');
   let drag = false;
-  bar.addEventListener('pointerdown', e => {
-    drag = true; bar.classList.add('drag'); bar.setPointerCapture(e.pointerId);
-  });
+  bar.addEventListener('pointerdown', e => { drag = true; bar.classList.add('drag'); bar.setPointerCapture(e.pointerId); });
   bar.addEventListener('pointermove', e => {
     if (!drag) return;
     const r = wrap.getBoundingClientRect();
@@ -360,17 +395,10 @@ $('#cmpSeg').addEventListener('click', e => {
     wrap.style.setProperty('--split', `${pct.toFixed(1)}%`);
     syncOverlay(); syncCmpOverlay();
   });
-  const end = () => {
-    if (!drag) return;
-    drag = false; bar.classList.remove('drag');
-    resyncDual();
-  };
+  const end = () => { if (!drag) return; drag = false; bar.classList.remove('drag'); resyncDual(); };
   bar.addEventListener('pointerup', end);
   bar.addEventListener('pointercancel', end);
-  bar.addEventListener('dblclick', () => {
-    wrap.style.setProperty('--split', '50%');
-    resyncDual();
-  });
+  bar.addEventListener('dblclick', () => { wrap.style.setProperty('--split', '50%'); resyncDual(); });
 })();
 
 /* 侧栏折叠 */
@@ -383,7 +411,7 @@ function toggleSide(force) {
 }
 $('#btnSideToggle').onclick = () => toggleSide();
 
-/* ---------------- 视图操作 ---------------- */
+/* ---------------- 视图操作（含首屏自动聚焦第 1 台转向架） ---------------- */
 function aspect() { const el = viewer.container; return el.clientWidth / Math.max(el.clientHeight, 1); }
 
 function fitHeightAt(xd, immediately = false) {
@@ -409,6 +437,47 @@ function jumpCar(k, immediately = false) {
   fitHeightAt(c.xd + c.w - w / 2 - w * 0.02, immediately);
 }
 
+function bogieList() {
+  /* 按车头→车尾顺序（xd 从大到小）列出全车转向架 */
+  return (S.ov?.boxes || []).filter(b => b.type === 'BOGIE' && b.rect).sort((a, b) => b.rect[0] - a.rect[0]);
+}
+
+function updateBogieNav() {
+  const list = bogieList();
+  $('#bogieNav').hidden = list.length === 0;
+  if (!list.length) return;
+  const i = Math.max(0, Math.min(S.bogieIdx, list.length - 1));
+  const b = list[i];
+  const car = b.car ?? carOf(b.xy);
+  $('#btnFocusBogie').textContent = `转向架 ${i + 1}/${list.length}${car ? `·${car}车` : ''}`;
+}
+
+function focusBogie(idx = 0, immediately = false) {
+  if (!ready()) return;
+  leader = viewer;
+  const bogies = bogieList();
+  if (bogies.length) {
+    S.bogieIdx = ((idx % bogies.length) + bogies.length) % bogies.length;
+    updateBogieNav();
+    const [x, y, w, h] = bogies[S.bogieIdx].rect;
+    const H = S.info.height, a = aspect();
+    let th = Math.min(H, Math.max(h * 1.28, 2600));
+    let tw = th * a;
+    if (tw < w * 1.15) { tw = w * 1.15; th = Math.min(H, tw / a); }
+    const x0 = Math.max(0, Math.min(S.info.width - tw, x + w / 2 - tw / 2));
+    const y0 = Math.max(0, Math.min(H - th, y + h / 2 - th / 2));
+    viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(x0, y0, tw, th), immediately);
+    return;
+  }
+  const c1 = (S.ov?.boxes || []).filter(b => b.rect).sort((a, b) => b.rect[0] - a.rect[0]);
+  if (c1.length) { fitHeightAt(c1[0].rect[0], immediately); return; }
+  jumpCar(1, immediately);
+}
+function focusFirstBogie(immediately = false) { focusBogie(0, immediately); }
+$('#btnFocusBogie').onclick = () => focusBogie(S.bogieIdx, false);
+$('#btnPrevBogie').onclick = () => focusBogie(S.bogieIdx - 1, false);
+$('#btnNextBogie').onclick = () => focusBogie(S.bogieIdx + 1, false);
+
 function flyTo([x, y, w, h]) {
   leader = viewer;
   const a = aspect();
@@ -425,8 +494,8 @@ $('#btnFull').onclick = () => {
   if (document.fullscreenElement) document.exitFullscreen(); else $('#viewerWrap').requestFullscreen();
 };
 
-/* ---------------- 读数与悬停提示（上下双屏均支持） ---------------- */
-function bindReadout(el, v, getInfo, getMap, labelPrefix) {
+/* ---------------- 读数、悬停提示与双屏实时同步准星 ---------------- */
+function bindReadout(el, v, otherV, otherXh, isMain, getInfo, getMap, labelPrefix) {
   el.addEventListener('mousemove', e => {
     const I = getInfo();
     if (!I || v.world.getItemCount() === 0) return;
@@ -438,28 +507,36 @@ function bindReadout(el, v, getInfo, getMap, labelPrefix) {
     const tag = labelPrefix();
     if (xd < 0 || xd >= I.width || y < 0 || y >= I.height) {
       $('#readout').textContent = `${tag}  比例 ${ratio}`;
+      hideXhairs();
     } else {
       const x = I.train_x1 - 1 - xd;
       const car = I.cars.find(c => x >= c.x0 && x < c.x1);
       $('#readout').textContent =
         `${tag}  x ${x}  y ${y}   帧 ${Math.floor(x / I.frame_w) + 1} 列 ${x % I.frame_w}   第 ${car?.car ?? '—'} 节   比例 ${ratio}`;
+      if (S.xhairOn && cmpMode !== 'off' && otherV.world.getItemCount() > 0) {
+        const mapped = mapPoint(p, isMain);
+        const sp = otherV.viewport.imageToViewerElementCoordinates(new OpenSeadragon.Point(mapped.x, mapped.y));
+        showXhair(otherXh, otherV.container, sp.x, sp.y);
+        (isMain ? xhMain : xhCmp).g.setAttribute('hidden', '');
+      } else hideXhairs();
     }
     const tip = $('#tip'), code = e.target?.dataset?.code;
     const b = code && (getMap().get(code) || S.byCode.get(code));
     if (b) {
       const wrap = $('#viewerWrap').getBoundingClientRect();
-      const stText = v === viewerCmp && cmpMode === 'template' ? '标准模板' : (STATUS[b.status] || '');
+      const stText = !isMain && cmpMode === 'template' ? '标准模板' : (STATUS[b.status] || '');
       tip.innerHTML = `<span class="mono">${esc(b.code)}</span> · ${esc(b.type_name || b.type || '')} · ${stText}`;
       tip.style.left = `${Math.min(e.clientX - wrap.left + 14, wrap.width - 240)}px`;
       tip.style.top = `${e.clientY - wrap.top + 14}px`;
       tip.hidden = false;
     } else tip.hidden = true;
   });
-  el.addEventListener('mouseleave', () => { $('#tip').hidden = true; });
+  el.addEventListener('mouseleave', () => { $('#tip').hidden = true; hideXhairs(); });
 }
 
-bindReadout($('#viewer'), viewer, () => S.info, () => S.byCode, () => `[本趟 ${S.trip || ''}]`);
-bindReadout($('#viewerCmp'), viewerCmp,
+bindReadout($('#viewer'), viewer, viewerCmp, xhCmp, true,
+  () => S.info, () => S.byCode, () => `[本趟 ${S.trip || ''}]`);
+bindReadout($('#viewerCmp'), viewerCmp, viewer, xhMain, false,
   () => (cmpMode === 'template' && S.tplInfo ? S.tplInfo : S.info),
   () => (cmpMode === 'template' ? S.tplByCode : S.byCode),
   () => (cmpMode === 'template' && S.tplTrip ? `[模板 ${S.tplTrip}]` : `[原图 ${S.trip || ''}]`));
@@ -470,7 +547,7 @@ function renderCarbar() {
   const I = S.info, bar = $('#carbar');
   const W = I.width;
   const dpr = window.devicePixelRatio || 1;
-  $('#carbarImg').src = OFF ? `data/${enc(I.trip)}/overview.jpg` : `/api/trips/${enc(I.trip)}/overview.jpg?w=${Math.min(8000, Math.round(bar.clientWidth * dpr))}&h=${Math.round(56 * dpr)}`;
+  $('#carbarImg').src = OFF ? `data/${enc(I.trip)}/overview.jpg` : `/api/trips/${enc(I.trip)}/overview.jpg?w=${Math.min(8000, Math.round(bar.clientWidth * dpr))}&h=${Math.round(52 * dpr)}`;
   $('#carbarCars').innerHTML = [...I.cars].sort((a, b) => a.xd - b.xd).map(c =>
     `<div class="car-seg" data-car="${c.car}" style="left:${c.xd / W * 100}%;width:${c.w / W * 100}%">` +
     `<span title="跳到第 ${c.car} 节车（键 ${c.car}）">第 ${c.car} 节</span></div>`).join('');
@@ -486,7 +563,6 @@ function renderTicks() {
     `title="点击直达：${esc(r.code)}（${esc(r.type_name || r.type || '')}）" ` +
     `style="left:${(r.rect[0] + r.rect[2] / 2) / W * 100}%"></i>`).join('') : '';
 }
-
 $('#carbarTicks').addEventListener('click', e => {
   const tick = e.target.closest('i[data-code]');
   if (tick) { e.stopPropagation(); selectPart(tick.dataset.code, true); }
@@ -534,9 +610,11 @@ async function loadTrips(keep) {
 }
 
 function renderTripSwitch() {
-  $('#tripSwitch').innerHTML = S.trips.map(t =>
-    `<button data-trip="${esc(t.trip)}" class="${t.trip === S.trip ? 'on' : ''}" title="${t.n_cars} 节 · 质检 ${VERDICT[t.verdict] || '未运行'}">` +
-    `<i class="dot ${esc(t.verdict || '')}"></i>${esc(t.trip)}</button>`).join('');
+  $('#tripSwitch').innerHTML = S.trips.map(t => {
+    const isSynth = /S$/i.test(t.trip);
+    return `<button data-trip="${esc(t.trip)}" class="${t.trip === S.trip ? 'on' : ''}" title="${t.n_cars} 节 · 质检 ${VERDICT[t.verdict] || '未运行'}${isSynth ? '（合成故障验证集）' : ''}">` +
+      `<i class="dot ${esc(t.verdict || '')}"></i>${esc(t.trip)}${isSynth ? '<span class="synth">合成考题</span>' : ''}</button>`;
+  }).join('');
 }
 $('#tripSwitch').addEventListener('click', e => {
   const b = e.target.closest('button');
@@ -553,7 +631,7 @@ function offlineTiles(trip) {
 
 async function selectTrip(trip) {
   const tok = ++S.tok;
-  S.trip = trip; S.sel = null; S.filter = 'all';
+  S.trip = trip; S.sel = null; S.filter = 'all'; S.didFocusTrip = null;
   S.ov = S.alarms = S.summary = S.tplTrip = S.tplInfo = S.tplOv = S.cmpRef = null;
   loadedCmpKey = null;
   history.replaceState(null, '', `#${enc(trip)}`);
@@ -581,9 +659,15 @@ async function selectTrip(trip) {
     S.tplInfo = ti.value || null;
     S.tplOv = tov.value || null;
   }
-  renderOverlay(); renderAlarms(); renderPartsFilterOpts(); renderPartsList(); renderTicks(); renderStatus();
+  renderOverlay(); updateBogieNav(); renderAlarms(); renderPartsFilterOpts(); renderPartsList(); renderTicks(); renderStatus();
   renderSummary(sm.value, sm.reason);
   updateCmpUI();
+  /* 首次载入时自动聚焦第 1 台转向架，避开空白车头 */
+  if (S.didFocusTrip !== trip && ready()) {
+    S.didFocusTrip = trip;
+    focusFirstBogie(true);
+    resyncDual();
+  }
 }
 
 function renderStatus() {
@@ -592,21 +676,21 @@ function renderStatus() {
   if (sm?.qc) {
     const v = sm.qc.verdict;
     chips.push(`<span class="chip ${v === 'pass' ? 'ok' : v === 'warn' ? 'warn' : 'bad'}">质检 <b>${VERDICT[v] || v}</b></span>`);
-  } else if (sm) chips.push('<span class="chip">质检 <b>未运行</b></span>');
+  }
   if (ov?.template_ver && ov?.template_trip) {
-    chips.push(`<span class="chip tpl opt">标准模板 <b>${esc(ov.template_ver)} · ${esc(ov.template_trip)}</b></span>`);
+    chips.push(`<span class="chip tpl">模板 <b>${esc(ov.template_ver)}·${esc(ov.template_trip)}</b></span>`);
   }
   if (sm?.align) {
     const r = sm.align.residual_px;
-    const v = r && typeof r === 'object' ? r.p95 : r;
-    chips.push(`<span class="chip opt">对齐 p95 <b>${fmt(v, 1)} px</b></span>`);
+    const med = r && typeof r === 'object' ? r.median : r;
+    chips.push(`<span class="chip opt">对齐中位 <b>${fmt(med, 1)} px</b></span>`);
   }
   if (ov) {
     const tot = ov.boxes.length;
     const ok = ov.counts?.ok || 0;
     const pct = tot ? `${fmt(ok / tot * 100, 1)}%` : '—';
     chips.push(`<span class="chip">零件 <b>${tot}</b></span>`);
-    if (tot) chips.push(`<span class="chip ok opt">正常率 <b>${pct}</b></span>`);
+    if (tot) chips.push(`<span class="chip ok opt">正常 <b>${pct}</b></span>`);
   }
   if (al) {
     const n = al.rows.length;
@@ -647,13 +731,27 @@ function filteredAlarms() {
   return rows.filter(r => S.filter === 'all' || r.alarms.includes(S.filter));
 }
 
+function reviewStats() {
+  const rows = S.alarms?.rows || [];
+  let confirmed = 0, ignored = 0;
+  for (const r of rows) {
+    const rv = getReview(S.trip, r.code);
+    if (rv === 'confirmed') confirmed++;
+    else if (rv === 'ignored') ignored++;
+  }
+  return { total: rows.length, done: confirmed + ignored, confirmed, ignored };
+}
+
 function updateAlarmTour() {
   const rows = filteredAlarms();
   const bar = $('#alarmTour');
   bar.hidden = rows.length === 0;
   if (!rows.length) return;
   const idx = rows.findIndex(r => r.code === S.sel);
-  $('#alarmTourIdx').textContent = idx >= 0 ? `第 ${idx + 1} / ${rows.length} 条` : `共 ${rows.length} 条告警`;
+  const rs = reviewStats();
+  $('#alarmTourIdx').textContent = idx >= 0
+    ? `第 ${idx + 1} / ${rows.length} 条${rs.done ? ` · 已核 ${rs.done}` : ''}`
+    : `共 ${rows.length} 条${rs.done ? ` · 已核 ${rs.done}` : ''}`;
 }
 
 function stepAlarm(delta) {
@@ -683,12 +781,14 @@ function renderAlarms() {
   const rows = filteredAlarms();
   list.innerHTML = (A.message ? `<div class="note" style="margin:0 0 6px">${esc(A.message)}</div>` : '') + rows.map(r => {
     const car = carOf(r.xy);
+    const rv = getReview(S.trip, r.code);
     const sub = [car ? `第 ${car} 节` : null, metricLine(r) || null, r.rect ? null : '无位置'].filter(Boolean).join(' · ');
-    return `<div class="item ${r.code === S.sel ? 'sel' : ''}" data-code="${esc(r.code)}">` +
+    const revTag = rv ? `<span class="tag rev-${rv}">${REV_LABEL[rv]}</span>` : '';
+    return `<div class="item ${r.code === S.sel ? 'sel' : ''} ${rv ? `rev-${rv}` : ''}" data-code="${esc(r.code)}">` +
       `<i class="bar ${r.status}"></i>` +
       `<div><div class="l1"><span class="mono">${esc(r.code)}</span><span>${esc(r.type_name || r.type || '')}</span></div>` +
       `<div class="l2">${esc(sub)}</div></div>` +
-      `<div class="tags">${r.alarms.map(a => `<span class="tag ${a === 'missing' ? 'missing' : 'alarm'}">${esc(alarmLabel(a))}</span>`).join('')}</div></div>`;
+      `<div class="tags">${revTag}${r.alarms.map(a => `<span class="tag ${a === 'missing' ? 'missing' : 'alarm'}">${esc(alarmLabel(a))}</span>`).join('')}</div></div>`;
   }).join('');
   updateAlarmTour();
 }
@@ -780,7 +880,7 @@ $('#partList').addEventListener('click', e => {
   if (it) selectPart(it.dataset.code, true);
 });
 
-/* ---------------- 零件与异物详情 ---------------- */
+/* ---------------- 零件与异物详情（含人工复核） ---------------- */
 
 function findRow(code) { return S.byCode.get(code) || S.alarms?.rows.find(r => r.code === code); }
 
@@ -797,7 +897,6 @@ function markSel() {
     const r = findRow(S.sel);
     if (r?.rect) gSel.append(partEl({ ...r, code: null }, `st-${r.status} sel`));
   }
-  /* 下半屏标准模板同步高亮同一零件 */
   if (cmpMode === 'template') {
     const tel = gTplBox.querySelector(`[data-code="${CSS.escape(S.sel)}"]`);
     if (tel) { tel.classList.add('sel'); gTplBox.appendChild(tel); }
@@ -840,6 +939,16 @@ async function openDetail(code, row) {
   }
 }
 
+function reviewBarHtml(code) {
+  const rv = getReview(S.trip, code);
+  return `<div class="review-bar" data-rev-code="${esc(code)}">` +
+    `<span>人工复核：<b>${rv ? REV_LABEL[rv] : '待复核'}</b></span>` +
+    `<button type="button" data-rev="confirmed" class="${rv === 'confirmed' ? 'on-confirmed' : ''}">✓ 确认故障</button>` +
+    `<button type="button" data-rev="ignored" class="${rv === 'ignored' ? 'on-ignored' : ''}">✕ 误报忽略</button>` +
+    (rv ? '<button type="button" data-rev="">重置</button>' : '') +
+    `</div>`;
+}
+
 function pairBlock(tplUrl, tripUrl, tplSub, tripSub, tplWhy, tripWhy, modalTitle, modalSub) {
   const zoomable = tplUrl && tripUrl;
   const zCls = zoomable ? 'zoomable' : '';
@@ -852,7 +961,7 @@ function pairBlock(tplUrl, tripUrl, tplSub, tripSub, tplWhy, tripWhy, modalTitle
     fig(tplUrl, '标准模板', tplSub, tplWhy) +
     fig(tripUrl, '本趟识别', tripSub, tripWhy) + '</div>';
   if (zoomable) {
-    h += `<div class="pair-hint"><span>点图片可放大 / 卷帘对比</span><button type="button" class="ghost sm" data-open-cmp="1"${dataAttr}>大图卷帘对比</button></div>`;
+    h += `<div class="pair-hint"><span>点图可放大 / 卷帘 / 差异高亮</span><button type="button" class="ghost sm" data-open-cmp="1"${dataAttr}>大图对比</button></div>`;
   }
   return h;
 }
@@ -865,11 +974,12 @@ function foreignDetail(r) {
   const tripUrl = idx && r.crops?.trip ? fcrop('trip') : null;
   const tplSub = S.ov?.template_trip ? `${S.ov.template_ver || ''} · ${S.ov.template_trip}` : '标准模板';
   let h = pairBlock(tplUrl, tripUrl, tplSub, S.trip, '模板无此区域', '无位置映射', r.code, '异物告警 · 标准模板同位置 vs 本趟');
+  h += reviewBarHtml(r.code);
   h += '<div class="sec-title">异物信息</div><dl class="kv">' +
     `<dt>差异面积</dt><dd class="mono">${fmt(r.metrics?.area)} px²</dd>` +
     `<dt>位置（趟）</dt><dd class="mono">${r.xy ? `x ${fmt(r.xy[0])}–${fmt(r.xy[2])}<br>y ${fmt(r.xy[1])}–${fmt(r.xy[3])}` : '无（缺对齐映射）'}</dd>` +
     `<dt>车厢</dt><dd>${carOf(r.xy) ? `第 ${carOf(r.xy)} 节` : '—'}</dd></dl>` +
-    '<div class="note">零件框外出现大片异常差异，建议结合卷帘对比人工复核。</div>';
+    '<div class="note">零件框外出现大片异常差异，建议结合卷帘和差异高亮人工复核。</div>';
   return h;
 }
 
@@ -893,6 +1003,7 @@ function partDetail(d) {
   let h = pairBlock(tplUrl, tripUrl, tplSub, S.trip, '模板里没有这个零件',
     r.status === 'missing' ? '未找到（缺失候选）' : '没有位置',
     r.code, `${r.type_name || r.type || ''} · 标准模板 (${tplSub}) vs 本趟 (${S.trip})`);
+  if (r.status !== 'ok') h += reviewBarHtml(r.code);
 
   h += '<div class="sec-title">对比指标</div>';
   if (c) {
@@ -938,6 +1049,14 @@ function partDetail(d) {
 }
 
 $('#detailBody').addEventListener('click', e => {
+  const rb = e.target.closest('.review-bar button[data-rev]');
+  if (rb) {
+    const bar = rb.closest('.review-bar');
+    const code = bar.dataset.revCode;
+    setReview(S.trip, code, rb.dataset.rev);
+    bar.outerHTML = reviewBarHtml(code);
+    return;
+  }
   const a = e.target.closest('[data-goto]');
   if (a) { e.preventDefault(); selectPart(a.dataset.goto, true); return; }
   const z = e.target.closest('[data-cmp-tpl]');
@@ -949,7 +1068,7 @@ $('#detailBody').addEventListener('click', e => {
   }
 });
 
-/* ---------------- 大图卷帘 / 并排 / 闪烁对比弹窗 ---------------- */
+/* ---------------- 大图卷帘 / 并排 / 闪烁 / 差异高亮弹窗 ---------------- */
 
 function openCmpModal(m) {
   S.modal = m;
@@ -958,11 +1077,7 @@ function openCmpModal(m) {
   $('#cmpModal').hidden = false;
   renderCmpModal();
 }
-
-function closeCmpModal() {
-  $('#cmpModal').hidden = true;
-  S.modal = null;
-}
+function closeCmpModal() { $('#cmpModal').hidden = true; S.modal = null; }
 
 function renderCmpModal() {
   const m = S.modal;
@@ -977,13 +1092,9 @@ function renderCmpModal() {
       `<div class="c-line"></div><div class="c-knob">⇄</div>` +
       `<span class="c-lbl l">标准模板</span><span class="c-lbl r">本趟识别</span></div>` +
       `<input type="range" class="curtain-range" id="curtainRange" min="0" max="100" value="50">` +
-      `<div class="note">左右拖动滑块或直接在图上划动，对比标准模板（左）与本趟识别（右）的细微差异</div>`;
+      `<div class="note">左右拖动滑块或直接在图上划动，对比标准模板（左）与本趟识别（右）</div>`;
     const box = $('#curtainBox'), rng = $('#curtainRange');
-    const setPos = p => {
-      const v = Math.max(0, Math.min(100, p));
-      box.style.setProperty('--pos', `${v}%`);
-      rng.value = Math.round(v);
-    };
+    const setPos = p => { const v = Math.max(0, Math.min(100, p)); box.style.setProperty('--pos', `${v}%`); rng.value = Math.round(v); };
     rng.oninput = () => setPos(+rng.value);
     let drag = false;
     const at = e => { const r = box.getBoundingClientRect(); return (e.clientX - r.left) / r.width * 100; };
@@ -995,18 +1106,30 @@ function renderCmpModal() {
       `<div class="side-big">` +
       `<figure><img src="${esc(m.tpl)}" alt="标准模板"><figcaption><span>标准模板</span></figcaption></figure>` +
       `<figure><img src="${esc(m.trip)}" alt="本趟识别"><figcaption><span>本趟识别</span></figcaption></figure></div>`;
-  } else {
+  } else if (m.mode === 'flip') {
     body.innerHTML =
       `<div class="flip-box" id="flipBox">` +
       `<img id="flipImg" src="${esc(m.trip)}" alt="对比图">` +
       `<span class="c-lbl" id="flipLbl" style="color:var(--ok)">当前显示：本趟识别（按住鼠标看标准模板）</span></div>` +
-      `<div class="note">按住图片不放切换为标准模板，松开恢复本趟识别，适合人眼快速捕捉位移和异物</div>`;
+      `<div class="note">按住图片不放切换为标准模板，松开恢复本趟识别，便于快速捕捉位移和异物</div>`;
     const fb = $('#flipBox'), img = $('#flipImg'), lbl = $('#flipLbl');
     const showTpl = () => { img.src = m.tpl; lbl.textContent = '当前显示：标准模板（松开恢复本趟）'; lbl.style.color = 'var(--tpl)'; };
     const showTrip = () => { img.src = m.trip; lbl.textContent = '当前显示：本趟识别（按住鼠标看标准模板）'; lbl.style.color = 'var(--ok)'; };
     fb.addEventListener('pointerdown', showTpl);
     fb.addEventListener('pointerup', showTrip);
     fb.addEventListener('pointerleave', showTrip);
+  } else {
+    body.innerHTML =
+      `<div class="diff-box"><div class="diff-stage" id="diffStage" style="--gain:2.4">` +
+      `<img src="${esc(m.tpl)}" alt="标准模板"><img class="diff-top" src="${esc(m.trip)}" alt="本趟识别"></div>` +
+      `<span class="c-lbl" style="color:var(--alarm)">逐像素绝对差值视图（越亮代表差异越大）</span></div>` +
+      `<div class="diff-ctrl"><span>差异增益</span><input type="range" id="diffGain" min="10" max="45" value="24"><span class="mono" id="diffGainVal">2.4×</span></div>` +
+      `<div class="note">基于实时差值混合计算：模板与本趟一致区域呈暗色，缺失、位移或异物区域自动高亮</div>`;
+    $('#diffGain').oninput = e => {
+      const g = (e.target.value / 10).toFixed(1);
+      $('#diffStage').style.setProperty('--gain', g);
+      $('#diffGainVal').textContent = `${g}×`;
+    };
   }
 }
 
@@ -1017,75 +1140,210 @@ $('#mMode').addEventListener('click', e => {
 $('#mClose').onclick = closeCmpModal;
 $('#cmpModal').addEventListener('click', e => { if (e.target === $('#cmpModal')) closeCmpModal(); });
 
-/* ---------------- 质检与对齐 ---------------- */
+/* ---------------- 巡检概览看板（KPI + 分车厢 + 分类别 + 可折叠底层参数） ---------------- */
 
 const empty = (t, s) => `<div class="empty"><b>${t}</b><small>${s}</small></div>`;
+
+function buildCarStats() {
+  const cars = [...(S.info?.cars || [])].sort((a, b) => a.car - b.car);
+  const byCar = new Map(cars.map(c => [c.car, { car: c.car, ok: 0, alarm: 0, missing: 0, foreign: 0 }]));
+  for (const b of S.ov?.boxes || []) {
+    const c = b.car ?? carOf(b.xy);
+    const rec = byCar.get(c);
+    if (rec) rec[b.status] = (rec[b.status] || 0) + 1;
+  }
+  for (const r of S.alarms?.rows || []) {
+    if (r.kind === 'foreign') {
+      const rec = byCar.get(carOf(r.xy));
+      if (rec) rec.foreign++;
+    }
+  }
+  return [...byCar.values()];
+}
 
 function renderSummary(sm, err) {
   const el = $('#summaryBody');
   if (!sm) { el.innerHTML = empty('读不到概况', esc(err?.message || '')); return; }
-  let h = '<div class="sec-title">S1 收录质检</div>';
+  const boxes = S.ov?.boxes || [];
+  const okN = S.ov?.counts?.ok || 0;
+  const alN = S.alarms?.rows?.length || 0;
+  const rs = reviewStats();
+  const pct = boxes.length ? `${fmt(okN / boxes.length * 100, 1)}%` : '—';
+  const rAlign = sm.align?.residual_px;
+  const medPx = rAlign && typeof rAlign === 'object' ? rAlign.median : rAlign;
+  const sy = sm.calib?.sy_mm_per_px || 0.233;
+
+  let h = '<div class="kpi-grid">' +
+    `<div class="kpi-card ok"><small>识别零件总数</small><b>${fmt(boxes.length)}</b><span class="sub">正常率 ${pct}</span></div>` +
+    `<div class="kpi-card ${alN ? 'warn' : 'ok'}"><small>异常与告警</small><b>${alN}</b><span class="sub">${alN ? `已人工复核 ${rs.done}/${rs.total}` : '全部在阈值内'}</span></div>` +
+    `<div class="kpi-card tpl"><small>跨趟对齐精度</small><b>${medPx != null ? `${fmt(medPx, 2)} px` : (S.ov?.template_trip === S.trip ? '基准趟' : '—')}</b>` +
+    `<span class="sub">${medPx != null ? `约 ${fmt(medPx * sy, 2)} mm` : (S.ov?.template_ver ? `模板 ${S.ov.template_ver}` : '未对齐')}</span></div>` +
+    `<div class="kpi-card ${sm.qc?.verdict === 'pass' ? 'ok' : ''}">` +
+    `<small>图像质检结论</small><b>${sm.qc ? (VERDICT[sm.qc.verdict] || esc(sm.qc.verdict)) : '—'}</b>` +
+    `<span class="sub">${sm.qc ? `${fmt(sm.qc.frames)} 帧 · 缺帧 ${sm.qc.missing.length}` : '未运行'}</span></div>` +
+    '</div>';
+
+  const carStats = buildCarStats();
+  if (carStats.length) {
+    const maxCar = Math.max(1, ...carStats.map(c => c.ok + c.alarm + c.missing));
+    h += '<div class="sec-title">分车厢巡检统计（点击跳转）</div><div class="bar-list">';
+    for (const c of carStats) {
+      const tot = c.ok + c.alarm + c.missing;
+      const wOk = (c.ok / maxCar * 100).toFixed(1);
+      const wAl = ((c.alarm + c.foreign) / maxCar * 100).toFixed(1);
+      const wMs = (c.missing / maxCar * 100).toFixed(1);
+      const bad = c.alarm + c.missing + c.foreign;
+      h += `<div class="bar-row" data-jump-car="${c.car}" title="点击跳到第 ${c.car} 节车">` +
+        `<span class="lbl">第 ${c.car} 节</span>` +
+        `<div class="track"><i class="seg-ok" style="width:${wOk}%"></i><i class="seg-al" style="width:${wAl}%"></i><i class="seg-ms" style="width:${wMs}%"></i></div>` +
+        `<span class="val">${tot}${bad ? ` / <b style="color:var(--alarm)">${bad}</b>` : ''}</span></div>`;
+    }
+    h += '</div>';
+  }
+
+  if (boxes.length) {
+    const byType = new Map();
+    for (const b of boxes) {
+      const k = b.type || b.type_name || 'OTHER';
+      const entry = byType.get(k) || { type: k, name: b.type_name || k, ok: 0, alarm: 0, missing: 0 };
+      entry[b.status]++;
+      byType.set(k, entry);
+    }
+    const sorted = [...byType.values()].sort((a, b) => (b.ok + b.alarm + b.missing) - (a.ok + a.alarm + a.missing)).slice(0, 8);
+    const maxT = Math.max(1, sorted[0].ok + sorted[0].alarm + sorted[0].missing);
+    h += '<div class="sec-title">零件类别分布（点击筛选）</div><div class="bar-list">';
+    for (const t of sorted) {
+      const tot = t.ok + t.alarm + t.missing;
+      h += `<div class="bar-row" data-filter-type="${esc(t.type)}" title="点击在零件页签筛选 ${esc(t.name)}">` +
+        `<span class="lbl">${esc(t.name)}</span>` +
+        `<div class="track"><i class="seg-ok" style="width:${(t.ok / maxT * 100).toFixed(1)}%"></i>` +
+        `<i class="seg-al" style="width:${(t.alarm / maxT * 100).toFixed(1)}%"></i>` +
+        `<i class="seg-ms" style="width:${(t.missing / maxT * 100).toFixed(1)}%"></i></div>` +
+        `<span class="val">${tot}</span></div>`;
+    }
+    h += '</div>';
+  }
+
+  /* 底层流水线明细收进可折叠区 */
+  h += '<details class="tech-details"><summary>展开底层流水线与技术参数（S1–S8）</summary>';
+  h += '<div class="sec-title">S1 收录质检</div>';
   if (sm.qc) {
     const q = sm.qc, v = q.verdict;
     h += `<div class="verdict ${esc(v)}"><span class="big">${VERDICT[v] || esc(v)}</span>` +
       `<small>${fmt(q.frames)} 帧 · 缺帧 ${q.missing.length} · 有标记的帧 ${q.flagged.length}${q.readonly ? ' · 原图只读' : ''}</small></div>`;
     if (q.reasons.length) h += `<ul class="reasons">${q.reasons.map(r => `<li>${esc(typeof r === 'string' ? r : JSON.stringify(r))}</li>`).join('')}</ul>`;
-    else h += '<div class="note">没有异常理由：无缺帧、无过暗过曝、无模糊。</div>';
-    if (q.missing.length) h += `<div class="note">缺帧：<span class="mono">${esc(q.missing.join(', '))}</span></div>`;
-    if (q.flagged.length) {
-      h += '<table class="t" style="margin-top:8px"><thead><tr><th>帧</th><th>标记</th></tr></thead><tbody>' +
-        q.flagged.slice(0, 30).map(f => `<tr><td>${f.f}</td><td>${esc(f.flags.join(', '))}</td></tr>`).join('') + '</tbody></table>';
-    }
-  } else h += empty('未运行', 'qc.json 不存在，跑 railside ingest');
+    else h += '<div class="note">无缺帧、无过暗过曝、无模糊。</div>';
+  } else h += '<div class="note">qc.json 不存在</div>';
 
-  h += '<div class="sec-title">S2 拼接</div>';
   if (sm.stitch) {
     const s = sm.stitch;
-    h += kv([
+    h += '<div class="sec-title">S2 拼接与编组</div>' + kv([
       ['车内范围', `x ${fmt(s.train_x0)} – ${fmt(s.train_x1)}`, true],
       ['车头', `x ${fmt(s.head_x)}`, true],
-      ['车内帧', s.train_frames ? `${s.train_frames[0]} – ${s.train_frames[1]}` : null, true],
-      ['接缝', `${s.n_seams} 处 · 异常 <b style="color:${s.bad_seams ? 'var(--missing)' : 'var(--ok)'}">${s.bad_seams ?? '—'}</b>`],
+      ['接缝', `${s.n_seams} 处 · 异常 ${s.bad_seams ?? '—'}`],
     ]);
-    h += '<table class="t" style="margin-top:8px"><thead><tr><th>车</th><th class="num">x0</th><th class="num">x1</th><th class="num">宽 px</th></tr></thead><tbody>' +
-      s.cars.map(c => `<tr data-car="${c.car}"><td>第 ${c.car} 节</td><td class="num">${fmt(c.x0)}</td><td class="num">${fmt(c.x1)}</td><td class="num">${fmt(c.width_px)}</td></tr>`).join('') +
-      '</tbody></table><div class="note">点一行跳到该节车。车号按过车先后，1 号车在右（车头）。</div>';
   }
-
-  h += '<div class="sec-title">S5 对齐</div>';
   if (sm.align) {
     const a = sm.align, r = a.residual_px;
     const res = r && typeof r === 'object' ? `中位 ${fmt(r.median, 2)} · p95 ${fmt(r.p95, 2)} · 最大 ${fmt(r.max, 2)} px` : `${fmt(r, 2)} px`;
-    h += kv([
+    h += '<div class="sec-title">S5 对齐参数</div>' + kv([
       ['模板版本', esc(a.template_ver), true],
-      ['定位靶', a.anchors_total != null ? `找到 ${a.anchors_found} / ${a.anchors_total}` : `${a.n_anchors} 个`],
+      ['定位靶', a.anchors_total != null ? `${a.anchors_found} / ${a.anchors_total}` : `${a.n_anchors} 个`],
       ['靶点残差', res, true],
       ['横向比例', a.scale_range ? `${fmt(a.scale_range[0], 4)} – ${fmt(a.scale_range[1], 4)}` : null, true],
-      ['横向偏移', a.offset_range_px ? `${fmt(a.offset_range_px[0], 1)} – ${fmt(a.offset_range_px[1], 1)} px` : null, true],
-      ['加密块', a.blocks_total != null ? `${a.blocks_used} / ${a.blocks_total}` : null, true],
       ['映射采样点', a.n_g, true],
-      ['二段质检', a.qc2_flagged != null ? `${a.qc2_flagged} 处标记` : null],
     ]);
-  } else if (S.ov?.template_trip === S.trip) {
-    h += '<div class="note">本趟是模板趟（u = x − head_x），不需要对齐。</div>';
-  } else h += empty('未运行', 'align.json 不存在，跑 railside align');
-
-  h += '<div class="sec-title">S3 标定 · S6 识别 · S8 对比</div>';
-  h += kv([
+  }
+  h += '<div class="sec-title">标定 · 识别 · 对比</div>' + kv([
     ['标定', sm.calib ? `${fmt(sm.calib.sx_min, 3)}–${fmt(sm.calib.sx_max, 3)} mm/px · ${sm.calib.n_refs} 个参照` : '未运行'],
-    ['分割', sm.seg ? `${fmt(sm.seg.n_dets)} 个检测 · ${esc(typeof sm.seg.model === 'object' ? (sm.seg.model?.name || '') : (sm.seg.model || ''))}` : '未运行'],
-    ['身份', sm.parts ? `${fmt(sm.parts.n)} 个实例 · ${Object.entries(sm.parts.found_by).map(([k, n]) => `${esc(FOUND[k] || k)} ${n}`).join(' / ')}` : '未运行'],
-    ['对比', sm.compare ? `${fmt(sm.compare.n_items)} 个零件 · 告警 ${sm.compare.n_alarm_parts} · 异物 ${sm.compare.n_foreign}` : '未运行'],
+    ['身份', sm.parts ? `${fmt(sm.parts.n)} 个实例` : '未运行'],
+    ['对比', sm.compare ? `${fmt(sm.compare.n_items)} 件 · 告警 ${sm.compare.n_alarm_parts} · 异物 ${sm.compare.n_foreign}` : '未运行'],
   ]);
-
   h += '<div class="sec-title">流水线文件</div><div class="files">' +
     sm.files.map(f => `<div class="${f.exists ? 'yes' : 'no'}" title="${esc(f.file)}"><i></i>${esc(f.step)}</div>`).join('') + '</div>';
+  h += '</details>';
   el.innerHTML = h;
 }
+
 $('#summaryBody').addEventListener('click', e => {
+  const jc = e.target.closest('[data-jump-car]');
+  if (jc) { jumpCar(+jc.dataset.jumpCar); return; }
+  const ft = e.target.closest('[data-filter-type]');
+  if (ft) {
+    setTab('parts');
+    $('#partType').value = ft.dataset.filterType;
+    S.partLimit = 200;
+    renderPartsList();
+    return;
+  }
   const tr = e.target.closest('tr[data-car]');
   if (tr) jumpCar(+tr.dataset.car);
 });
+
+/* ---------------- 一键可打印巡检报告 ---------------- */
+
+function openReport() {
+  if (!S.trip || !S.info) return;
+  const sm = S.summary || {}, ov = S.ov || { boxes: [], counts: {} }, al = S.alarms || { rows: [] };
+  const rs = reviewStats();
+  const carStats = buildCarStats();
+  const okN = ov.counts?.ok || 0, tot = ov.boxes.length;
+  const pct = tot ? `${fmt(okN / tot * 100, 1)}%` : '—';
+  const rAlign = sm.align?.residual_px;
+  const medPx = rAlign && typeof rAlign === 'object' ? rAlign.median : rAlign;
+  const nowStr = new Date().toLocaleString('zh-CN');
+
+  let h = `<h1>地铁走行部侧面视觉巡检报告</h1>` +
+    `<div class="r-sub"><span>趟次：<b>${esc(S.trip)}</b> · 编组：${S.info.cars.length} 节 · 参考标准模板：${esc(ov.template_ver || '—')} (${esc(ov.template_trip || '—')})</span><span>生成时间：${esc(nowStr)}</span></div>` +
+    `<div class="r-kpis">` +
+    `<div class="r-kpi"><small>检出零件总数</small><b>${fmt(tot)}</b></div>` +
+    `<div class="r-kpi"><small>正常率</small><b>${pct}</b></div>` +
+    `<div class="r-kpi"><small>异常与告警</small><b>${al.rows.length} 条</b></div>` +
+    `<div class="r-kpi"><small>跨趟对齐中位误差</small><b>${medPx != null ? `${fmt(medPx, 2)} px` : '基准趟'}</b></div>` +
+    `</div>`;
+
+  h += '<h2>一、分车厢巡检汇总</h2><table><thead><tr><th>车厢</th><th>正常件</th><th>零件告警</th><th>缺失件</th><th>异物告警</th><th>状态</th></tr></thead><tbody>' +
+    carStats.map(c => {
+      const bad = c.alarm + c.missing + c.foreign;
+      return `<tr><td>第 ${c.car} 节</td><td>${c.ok}</td><td>${c.alarm}</td><td>${c.missing}</td><td>${c.foreign}</td><td>${bad ? `待复核（${bad}）` : '正常'}</td></tr>`;
+    }).join('') + '</tbody></table>';
+
+  h += `<h2>二、告警与异物复核清单（共 ${al.rows.length} 条，已复核 ${rs.done} 条：确认故障 ${rs.confirmed} / 误报忽略 ${rs.ignored}）</h2>`;
+  if (!al.rows.length) {
+    h += '<p>本趟全部关键零部件指标均在标准阈值内，无告警记录。</p>';
+  } else {
+    for (const r of al.rows) {
+      const rv = getReview(S.trip, r.code);
+      const car = carOf(r.xy);
+      const isF = r.kind === 'foreign';
+      const tplSrc = isF
+        ? (OFF ? `data/${enc(S.trip)}/crops/foreign_${r.idx}_template.jpg` : `/api/trips/${enc(S.trip)}/foreign/${r.idx}/crop.jpg?side=template`)
+        : (OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_template.jpg` : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=template`);
+      const tripSrc = isF
+        ? (OFF ? `data/${enc(S.trip)}/crops/foreign_${r.idx}_trip.jpg` : `/api/trips/${enc(S.trip)}/foreign/${r.idx}/crop.jpg?side=trip`)
+        : (OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_trip.jpg` : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=trip`);
+      h += `<div class="r-alarm"><div class="r-alarm-head">` +
+        `<span>${esc(r.code)} · ${esc(r.type_name || r.type || '')}（${car ? `第 ${car} 节` : '—'} · ${r.alarms.map(alarmLabel).join('/')}）</span>` +
+        `<span>人工复核：${rv ? REV_LABEL[rv] : '待复核'}</span></div>` +
+        `<div style="font-size:12px;color:#5c6b77;margin-bottom:6px">${esc(metricLine(r) || '—')}</div>` +
+        `<div class="r-imgs"><figure><img src="${esc(tplSrc)}" alt="标准模板"><figcaption>标准模板（${esc(ov.template_trip || '')}）</figcaption></figure>` +
+        `<figure><img src="${esc(tripSrc)}" alt="本趟识别"><figcaption>本趟识别（${esc(S.trip)}）</figcaption></figure></div></div>`;
+    }
+  }
+  h += `<div style="margin-top:16px;padding-top:10px;border-top:1px solid #d5dde5;font-size:11.5px;color:#5c6b77">` +
+    `说明：本报告由线阵视觉检测系统基于标准模板（${esc(ov.template_ver || '—')} · ${esc(ov.template_trip || '—')}）自动对齐比对生成，最终检修处置结论以人工复核确认意见为准。</div>`;
+  $('#reportBody').innerHTML = h;
+  $('#reportModal').hidden = false;
+}
+
+$('#btnReport').onclick = openReport;
+$('#btnPrintReport').onclick = () => window.print();
+$('#btnCloseReport').onclick = () => { $('#reportModal').hidden = true; };
+$('#reportModal').addEventListener('click', e => { if (e.target === $('#reportModal')) $('#reportModal').hidden = true; });
+
+$('#btnHelp').onclick = () => { $('#helpModal').hidden = false; };
+$('#btnCloseHelp').onclick = () => { $('#helpModal').hidden = true; };
+$('#helpModal').addEventListener('click', e => { if (e.target === $('#helpModal')) $('#helpModal').hidden = true; });
 
 /* ---------------- 处理新趟 ---------------- */
 
@@ -1175,10 +1433,14 @@ $('#chatForm').addEventListener('submit', async e => {
 document.addEventListener('keydown', e => {
   if (e.target.closest('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'Escape') {
-    if (S.modal) closeCmpModal(); else closeDetail();
+    if (!$('#reportModal').hidden) { $('#reportModal').hidden = true; return; }
+    if (!$('#helpModal').hidden) { $('#helpModal').hidden = true; return; }
+    if (S.modal) { closeCmpModal(); return; }
+    closeDetail();
     return;
   }
-  if (S.modal) return;
+  if (e.key === '?') { $('#helpModal').hidden = !$('#helpModal').hidden; return; }
+  if (S.modal || !$('#reportModal').hidden || !$('#helpModal').hidden) return;
   if (e.key === 'b' || e.key === 'B') { toggleSide(); return; }
   if (e.key === '[') { stepAlarm(-1); return; }
   if (e.key === ']') { stepAlarm(1); return; }
@@ -1193,7 +1455,6 @@ document.addEventListener('keydown', e => {
 if (OFF) {
   $$('.side-tabs button[data-tab="process"], .side-tabs button[data-tab="chat"], #pane-process, #pane-chat')
     .forEach(el => { el.hidden = true; });
-  $('.brand-text small').textContent = '离线浏览包 · 标准模板比对';
   fetch('ocr.html', { method: 'HEAD' }).then(r => { if (r.ok) $('#ocrLink').hidden = false; })
     .catch(() => { $('#ocrLink').hidden = false; });
 }

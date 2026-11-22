@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>走行部侧面巡检 · railside</title>
+<title>走行部侧面视觉巡检系统 · railside</title>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
@@ -11,25 +11,53 @@
 <header class="topbar">
   <div class="brand">
     <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="9" width="28" height="12" rx="2"/><circle cx="9" cy="24" r="3"/><circle cx="23" cy="24" r="3"/><path d="M2 15h28"/></svg>
-    <div class="brand-text"><b>走行部侧面巡检</b><small>线阵侧面图像 · 标准模板比对</small></div>
+    <div class="brand-text"><b>走行部侧面巡检系统</b><small>地铁线阵视觉检测 · 标准模板比对</small></div>
   </div>
   <div class="trip-switch" id="tripSwitch" role="tablist" aria-label="趟次"></div>
   <a class="nav-link" id="ocrLink" href="ocr.html" hidden>编号识别</a>
   <div class="status-strip" id="statusStrip"></div>
-  <button class="side-toggle" id="btnSideToggle" title="折叠/展开右侧栏（B）" aria-label="折叠/展开右侧栏">
-    <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M12.5 3.5v13"/></svg>
-  </button>
+  <div class="top-actions">
+    <button type="button" class="nav-btn" id="btnReport" title="生成可打印/另存 PDF 的本趟巡检报告">巡检报告</button>
+    <button type="button" class="icon-btn" id="btnHelp" title="快捷键说明（?）" aria-label="快捷键说明">?</button>
+    <button type="button" class="icon-btn" id="btnSideToggle" title="折叠/展开右侧栏（B）" aria-label="折叠/展开右侧栏">
+      <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M12.5 3.5v13"/></svg>
+    </button>
+  </div>
 </header>
 
 <main class="layout" id="mainLayout">
   <section class="stage">
     <div class="carbar-wrap">
       <div class="carbar-ends"><span>← 车尾</span><span id="carbarTitle" class="carbar-title"></span><span>车头 →</span></div>
-      <div class="carbar" id="carbar" title="点击跳转；点车厢编号跳到该节车（键盘 1–6）；点告警竖线直达告警">
+      <div class="carbar" id="carbar" title="点击跳转；点车厢编号跳到该节车（键盘 1–6）；点告警标记直达告警">
         <img id="carbarImg" alt="">
         <div class="carbar-cars" id="carbarCars"></div>
         <div class="carbar-ticks" id="carbarTicks"></div>
         <div class="carbar-view" id="carbarView"></div>
+      </div>
+    </div>
+
+    <div class="stage-bar" id="layerCtrl">
+      <div class="bar-group">
+        <span class="layer-title">图层</span>
+        <label class="lchip" data-k="ok"><input type="checkbox" checked><i class="sw st-ok"></i>正常 <em id="cntOk">0</em></label>
+        <label class="lchip" data-k="alarm"><input type="checkbox" checked><i class="sw st-alarm"></i>告警 <em id="cntAlarm">0</em></label>
+        <label class="lchip" data-k="missing"><input type="checkbox" checked><i class="sw st-missing"></i>缺失 <em id="cntMissing">0</em></label>
+        <label class="lchip" data-k="anchor"><input type="checkbox"><i class="sw st-anchor"></i>定位靶 <em id="cntAnchor">0</em></label>
+        <label class="lchip" data-k="tpl" id="chipTplBox" title="在下半屏标准模板上叠加标准零件轮廓"><input type="checkbox" id="chkTplBox" checked><i class="sw st-tpl"></i>模板框</label>
+        <label class="lchip" data-k="xhair" id="chipXhair" title="鼠标在任一画面移动时，另一画面同步显示精确对齐的实时十字准星"><input type="checkbox" id="chkXhair" checked><i class="sw st-xhair"></i>联动准星</label>
+      </div>
+      <div class="bar-right">
+        <div class="bogie-nav" id="bogieNav" title="逐台浏览全车转向架（共 12 台）">
+          <button type="button" id="btnPrevBogie" title="上一台转向架">◀</button>
+          <button type="button" id="btnFocusBogie" class="bogie-lbl">转向架 1/12</button>
+          <button type="button" id="btnNextBogie" title="下一台转向架">▶</button>
+        </div>
+        <div class="seg" id="cmpSeg" role="group" aria-label="对比模式">
+          <button type="button" data-mode="template" title="上半本趟识别，下半标准模板（按对齐映射精准联动）">模板对比</button>
+          <button type="button" data-mode="raw" title="上半本趟识别，下半同趟无标注原图">原图</button>
+          <button type="button" data-mode="off" title="单屏显示">单屏</button>
+        </div>
       </div>
     </div>
 
@@ -54,22 +82,7 @@
           <svg viewBox="0 0 20 20"><path d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/></svg></button>
       </div>
 
-      <div class="layer-ctrl" id="layerCtrl">
-        <span class="layer-title">叠加</span>
-        <label class="lchip" data-k="ok"><input type="checkbox" checked><i class="sw st-ok"></i>正常 <em id="cntOk">0</em></label>
-        <label class="lchip" data-k="alarm"><input type="checkbox" checked><i class="sw st-alarm"></i>告警 <em id="cntAlarm">0</em></label>
-        <label class="lchip" data-k="missing"><input type="checkbox" checked><i class="sw st-missing"></i>缺失 <em id="cntMissing">0</em></label>
-        <label class="lchip" data-k="anchor"><input type="checkbox"><i class="sw st-anchor"></i>定位靶 <em id="cntAnchor">0</em></label>
-        <label class="lchip" data-k="tpl" id="chipTplBox" title="在下半屏标准模板上叠加标准零件轮廓"><input type="checkbox" id="chkTplBox" checked><i class="sw st-tpl"></i>模板框</label>
-        <span class="ctrl-sep"></span>
-        <div class="seg" id="cmpSeg" role="group" aria-label="对比模式">
-          <button type="button" data-mode="template" title="上半本趟识别，下半标准模板（按对齐映射精准联动）">模板对比</button>
-          <button type="button" data-mode="raw" title="上半本趟识别，下半同趟无标注原图">原图</button>
-          <button type="button" data-mode="off" title="单屏显示">单屏</button>
-        </div>
-      </div>
       <div class="overlay-note" id="overlayNote" hidden></div>
-
       <div class="readout" id="readout"></div>
       <div class="tip" id="tip" hidden></div>
     </div>
@@ -79,7 +92,7 @@
     <nav class="side-tabs" role="tablist">
       <button data-tab="alarms" class="on">告警<span class="badge" id="alarmBadge"></span></button>
       <button data-tab="parts">零件<span class="badge muted" id="partsBadge"></span></button>
-      <button data-tab="summary">质检对齐</button>
+      <button data-tab="summary">巡检概览</button>
       <button data-tab="process">处理新趟</button>
       <button data-tab="chat">智能体</button>
     </nav>
@@ -149,7 +162,7 @@
   </aside>
 </main>
 
-<!-- 局部大图对比弹窗（支持卷帘、并排、按住切换） -->
+<!-- 局部大图对比弹窗（支持卷帘、并排、按住切换、差异高亮） -->
 <div class="modal" id="cmpModal" hidden role="dialog" aria-modal="true" aria-label="模板与本趟大图对比">
   <div class="modal-card">
     <header class="modal-head">
@@ -158,10 +171,45 @@
         <button type="button" data-m="curtain" class="on">卷帘对比</button>
         <button type="button" data-m="side">并排对比</button>
         <button type="button" data-m="flip">按住切换</button>
+        <button type="button" data-m="diff">差异高亮</button>
       </div>
       <button type="button" class="ghost sm" id="mClose" title="关闭（Esc）">关闭</button>
     </header>
     <div class="modal-body" id="mBody"></div>
+  </div>
+</div>
+
+<!-- 可打印巡检报告弹窗 -->
+<div class="modal report-modal" id="reportModal" hidden role="dialog" aria-modal="true" aria-label="巡检报告">
+  <div class="modal-card report-card">
+    <header class="modal-head no-print">
+      <div class="modal-title"><b>巡检报告预览</b><small>支持直接打印或另存为 PDF</small></div>
+      <button type="button" class="primary" id="btnPrintReport">打印 / 另存 PDF</button>
+      <button type="button" class="ghost sm" id="btnCloseReport">关闭</button>
+    </header>
+    <div class="report-sheet" id="reportBody"></div>
+  </div>
+</div>
+
+<!-- 快捷键帮助弹窗 -->
+<div class="modal" id="helpModal" hidden role="dialog" aria-modal="true" aria-label="快捷键说明">
+  <div class="modal-card help-card">
+    <header class="modal-head">
+      <div class="modal-title"><b>操作与快捷键说明</b></div>
+      <button type="button" class="ghost sm" id="btnCloseHelp">关闭</button>
+    </header>
+    <div class="help-body">
+      <dl class="kv">
+        <dt><kbd>1</kbd> – <kbd>6</kbd></dt><dd>快速跳转到第 1–6 节车厢</dd>
+        <dt><kbd>[</kbd> / <kbd>]</kbd></dt><dd>上一条 / 下一条告警（巡检连播）</dd>
+        <dt><kbd>B</kbd></dt><dd>折叠 / 展开右侧栏（投影全宽视图）</dd>
+        <dt><kbd>H</kbd> / <kbd>0</kbd></dt><dd>适应高度 / 查看整列车</dd>
+        <dt><kbd>+</kbd> / <kbd>-</kbd></dt><dd>放大 / 缩小（双屏同步缩放）</dd>
+        <dt><kbd>Esc</kbd></dt><dd>关闭弹窗或零件详情</dd>
+        <dt><kbd>?</kbd></dt><dd>打开本快捷键说明</dd>
+      </dl>
+      <div class="note" style="margin-top:12px">提示：上下分屏中间的横条可拖动调高度比例（双击恢复 50/50）；开启「联动准星」后，鼠标在任一屏移动都会在另一屏精准标出对齐像素位置。</div>
+    </div>
   </div>
 </div>
 
