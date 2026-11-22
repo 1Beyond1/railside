@@ -72,7 +72,7 @@ function makeViewer(el) {
     element: el,
     prefixUrl: OFF ? 'static/vendor/openseadragon/images/' : '/static/vendor/openseadragon/images/',
     showNavigationControl: false, showNavigator: false,
-    visibilityRatio: 1, constrainDuringPan: true, minZoomImageRatio: 0.95, maxZoomPixelRatio: 3,
+    visibilityRatio: 1, constrainDuringPan: true, minZoomImageRatio: 0.95, maxZoomPixelRatio: 3, minPixelRatio: 1.0,
     zoomPerScroll: 1.35, animationTime: 0.45, springStiffness: 9,
     imageLoaderLimit: 8, timeout: 60000,
     gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true, flickEnabled: false },
