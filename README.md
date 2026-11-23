@@ -9,6 +9,7 @@
 [简体中文](README.md) · [English](README.en.md) · [更新日志](CHANGELOG.md) · [数据安全与合规](SECURITY.md)
 
 [![CI](https://github.com/1Beyond1/railside/actions/workflows/ci.yml/badge.svg)](https://github.com/1Beyond1/railside/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/1Beyond1/railside?label=release&color=3ebd8b)](https://github.com/1Beyond1/railside/releases)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776ab.svg)](pyproject.toml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-167%20passed-3ebd8b.svg)](.github/workflows/ci.yml)
