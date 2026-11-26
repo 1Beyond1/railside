@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo.png" alt="railside logo" width="88" />
+
 # railside
 
 **Side-View Line-Scan Visual Inspection System for Metro Trains**

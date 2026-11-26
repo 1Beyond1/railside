@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo.png" alt="railside logo" width="88" />
+
 # railside
 
 **地铁列车侧面线阵视觉智能巡检系统**
