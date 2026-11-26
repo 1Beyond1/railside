@@ -24,6 +24,10 @@ class Unavailable(Exception):
     """要调的步骤还没实现（模块不存在）。"""
 
 
+class Conflict(Exception):
+    """同一趟已有运行中的处理任务。"""
+
+
 def step_ready(step):
     mod = cli.STEPS.get(step)
     if mod is None:
@@ -43,61 +47,120 @@ class Job:
     def __init__(self, kind, trip, cmd, meta=None):
         self.id = f'{kind}-{next(_ids)}'
         self.kind, self.trip, self.cmd, self.meta = kind, trip, cmd, meta or {}
+        self._lock = threading.Lock()
         self.status, self.rc = 'running', None
         self.lines = collections.deque(maxlen=LOG_LINES)
         self.started, self.ended = time.time(), None
         self.proc = None
 
     def view(self, tail=200):
-        lines = list(self.lines)[-tail:]
-        out = {'id': self.id, 'kind': self.kind, 'trip': self.trip, 'status': self.status, 'rc': self.rc,
-               'cmd': ' '.join(self.cmd), 'meta': self.meta, 'started': self.started, 'ended': self.ended,
-               'elapsed': round((self.ended or time.time()) - self.started, 1), 'log': lines}
-        if self.kind == 'agent' and self.status != 'running':
-            out['reply'] = agent_reply(list(self.lines), self.rc)
+        with self._lock:
+            lines_all = list(self.lines)
+            status, rc, ended = self.status, self.rc, self.ended
+        lines = lines_all[-tail:] if tail else []
+        out = {'id': self.id, 'kind': self.kind, 'trip': self.trip, 'status': status, 'rc': rc,
+               'cmd': ' '.join(self.cmd), 'meta': self.meta, 'started': self.started, 'ended': ended,
+               'elapsed': round((ended or time.time()) - self.started, 1), 'log': lines}
+        if self.kind == 'agent' and status != 'running':
+            out['reply'] = agent_reply(lines_all, rc)
         return out
 
 
 def start(kind, step, argv, trip, meta=None):
     if not step_ready(step):
         raise Unavailable(f'railside {step} 还没实现（缺模块 railside.{cli.STEPS.get(step, step)}），装好后再试')
-    job = Job(kind, trip, command(step, argv), meta)
-    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1', 'RAILSIDE_ROOT': str(io.ROOT)}
-    if io.DATA != io.ROOT / '数据':
-        env['RAILSIDE_DATA'] = str(io.DATA)
-    try:
-        job.proc = subprocess.Popen(job.cmd, cwd=str(io.ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace',
-                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    except OSError as e:
-        job.lines.append(f'启动失败：{e}')
-        job.status, job.rc, job.ended = 'failed', None, time.time()
-    else:
-        threading.Thread(target=_pump, args=(job,), daemon=True).start()
     with _lock:
+        if kind == 'run':
+            for existing in JOBS.values():
+                with existing._lock:
+                    if existing.kind == 'run' and existing.trip == trip and existing.status == 'running':
+                        raise Conflict(f'趟次 {trip} 已有正在运行的处理任务（{existing.id}），请等待完成或先取消')
+        job = Job(kind, trip, command(step, argv), meta)
         JOBS[job.id] = job
+    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1',
+           'RAILSIDE_ROOT': str(io.ROOT), 'RAILSIDE_DATA': str(io.DATA)}
+    try:
+        proc = subprocess.Popen(job.cmd, cwd=str(io.ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace',
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except OSError as e:
+        with job._lock:
+            job.lines.append(f'启动失败：{e}')
+            job.status, job.rc, job.ended = 'failed', None, time.time()
+    else:
+        with job._lock:
+            job.proc = proc
+        threading.Thread(target=_pump, args=(job,), daemon=True).start()
     return job
 
 
 def _pump(job):
-    for line in job.proc.stdout:
-        job.lines.append(line.rstrip('\r\n'))
-    job.rc = job.proc.wait()
-    job.ended = time.time()
-    job.status = 'ok' if job.rc == 0 else 'failed'
-    if job.kind == 'run' and job.rc == 2:
-        for line in reversed(job.lines):
+    stdout = job.proc.stdout
+    try:
+        if stdout is not None:
+            for line in stdout:
+                with job._lock:
+                    job.lines.append(line.rstrip('\r\n'))
+    finally:
+        if stdout is not None:
             try:
-                summary = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(summary, dict) and summary.get('step') == 'run' and summary.get('status') == 'partial':
-                job.status = 'partial'
-            break
+                stdout.close()
+            except OSError:
+                pass
+        rc = job.proc.wait()
+        with job._lock:
+            job.rc = rc
+            if job.ended is None:
+                job.ended = time.time()
+            if job.status == 'running':
+                new_status = 'ok' if rc == 0 else 'failed'
+                if job.kind == 'run' and rc == 2:
+                    for line in reversed(job.lines):
+                        try:
+                            summary = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(summary, dict) and summary.get('step') == 'run' and summary.get('status') == 'partial':
+                            new_status = 'partial'
+                            break
+                job.status = new_status
+
+
+def cancel(job_id):
+    job = get(job_id)
+    if job is None:
+        return None
+    with job._lock:
+        if job.status != 'running':
+            return job
+        proc = job.proc
+        job.status = 'cancelled'
+        job.ended = time.time()
+        job.lines.append('任务已取消')
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+    return job
+
+
+def shutdown():
+    """服务退出时终止所有仍在运行的后台任务子进程。"""
+    with _lock:
+        ids = [j.id for j in JOBS.values() if j.status == 'running']
+    for jid in ids:
+        cancel(jid)
 
 
 def get(job_id):
-    return JOBS.get(job_id)
+    with _lock:
+        return JOBS.get(job_id)
 
 
 def all_jobs():

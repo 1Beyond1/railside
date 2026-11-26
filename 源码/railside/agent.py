@@ -137,11 +137,12 @@ class Tools:
         self.calls = []
 
     # ---------- 小工具 ----------
-    def _trip(self, trip=None):
+    def _trip(self, trip=None, must_exist=True):
         t = trip or self.trip
         if not t:
             raise ValueError('没有指定趟次')
-        if not io.trip_dir(t).is_dir():
+        d = io.trip_dir(t)
+        if must_exist and not d.is_dir():
             raise FileNotFoundError(f'没有趟次 {t}（缺 数据/中间/{t}/），先跑 railside run 或 ingest')
         return t
 
@@ -251,7 +252,7 @@ class Tools:
         return query.sql(text)
 
     def run_step(self, step, trip=None, src=None):
-        t = self._trip(trip)
+        t = self._trip(trip, must_exist=(step != 'ingest'))
         if step == 'ingest' and not src:
             src = self._src_of(t)
         r = pipeline.run_step(step, pipeline.step_argv(step, t, src=src, weights=self.weights, template=self.template))
@@ -259,14 +260,14 @@ class Tools:
         return {**head, 'summary': r.get('summary')}
 
     def run_trip(self, src=None, trip=None, weights=None):
-        t = self._trip(trip)
+        t = self._trip(trip, must_exist=False)
         src = src or self._src_of(t)
         if not src:
             raise ValueError(f'没给原图目录，{t} 的 trip.json 里也没有 src_dir')
-        return pipeline.run_trip(Path(src), t, weights or self.weights, self.template)
+        return pipeline.run_trip(Path(src), t, weights or self.weights, self.template, log_fn=lambda *_: None)
 
     def report(self, trip=None):
-        return report.write_report(self._trip(trip))
+        return report.write_report(self._trip(trip), template_ver=self.template)
 
     # ---------- 统一执行与留痕 ----------
     def call(self, name, args=None):
@@ -288,7 +289,8 @@ class Tools:
             status = 'error'
         rec = {'tool': name, 'args': args, 'status': status, 'seconds': round(time.time() - t0, 2)}
         self.calls.append(rec)
-        log_trip = self.trip or args.get('trip') or '_mcp'
+        raw_trip = self.trip or args.get('trip') or '_mcp'
+        log_trip = raw_trip if io.is_valid_trip(raw_trip) else '_invalid'
         db.append_agent_log(log_trip, 'agent', name, args, _brief(result), status)
         return result
 
@@ -490,8 +492,10 @@ def _post(url, payload, key, timeout=60):
         return json.loads(r.read().decode('utf-8'))
 
 
-def _chat(cfg, messages):
-    payload = {'model': cfg['model'], 'messages': messages, 'temperature': 0, 'tools': tool_specs()}
+def _chat(cfg, messages, with_tools=True):
+    payload = {'model': cfg['model'], 'messages': messages, 'temperature': 0}
+    if with_tools:
+        payload['tools'] = tool_specs()
     res = _post(cfg['base'] + '/chat/completions', payload, cfg['key'])
     msg = ((res.get('choices') or [{}])[0] or {}).get('message') or {}
     return {'content': msg.get('content') or '', 'tool_calls': msg.get('tool_calls') or []}
@@ -613,6 +617,7 @@ def _md_report(trip, facts, mode='离线'):
 
 def write_agent_report(trip, template=None):
     """写 数据/成品/报告/<趟>/智能体报告.md。返回 {path, tools, mode}。"""
+    io.validate_trip(trip)
     tools = Tools(trip, None, template)
     facts = _report_facts(tools, trip)
     cfg = llm_config()
@@ -623,14 +628,19 @@ def write_agent_report(trip, template=None):
                       '分节：质检、对齐质量、标定、告警（按严重度排序，列成表）、需人工复核的位置、局限。'
                       '只用给定数字，不要编；没有的步骤写明未运行。\n\n'
                       + json.dumps(facts, ensure_ascii=False, default=io._jsonable))
-            msg = _chat(cfg, [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': prompt}])
+            msg = _chat(cfg, [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': prompt}], with_tools=False)
             text = msg['content'] or None
         except Exception:
             text = None
     mode = '在线' if text else '离线'
     if not text:
         text = _md_report(trip, facts, mode)
+    rep_root = (io.OUT / '报告').resolve()
     out = io.OUT / '报告' / trip / '智能体报告.md'
+    try:
+        out.resolve().relative_to(rep_root)
+    except ValueError:
+        raise ValueError(f'报告路径越界：{trip!r}') from None
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding='utf-8')
     return {'path': out, 'tools': tools.calls, 'mode': mode}

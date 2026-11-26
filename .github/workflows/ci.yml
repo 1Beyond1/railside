@@ -13,7 +13,11 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +31,9 @@ jobs:
 
       - name: Sync dependencies (without DL group)
         run: uv sync --no-group dl
+
+      - name: Check frontend JS syntax
+        run: node --check 源码/railside/app/static/app.js
 
       - name: Run pytest
         env:

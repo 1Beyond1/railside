@@ -286,16 +286,19 @@ def find_foreign(t_tpl, t_new, tpl, tparts, inst, extra, amap, cfg):
         d = np.maximum(d - cv2.blur(d, (151, 151)) - 10.0, 0)   # 去掉沿车身的缓变残留
         keep = np.ones(d.shape, bool)
         for k in tparts:
-            if k.get('parent') != q['code'] or k['code'] not in inst:
+            if k.get('parent') != q['code']:
                 continue
-            ki = inst[k['code']]
-            if ki['found_by'] == 'missing':
-                continue
-            kdu, kdv = offset_of(ki, k, amap)
-            poly = np.asarray(k['poly_uv'], float) + [kdu - du, kdv - dv]   # 子件在这张网格上的位置
+            ki = inst.get(k['code'])
+            if ki is None or ki['found_by'] == 'missing':
+                # 缺失子件已单独报 missing，仍用模板原位轮廓遮除，避免一缺双报为异物
+                ddu, ddv = 0.0, 0.0
+            else:
+                kdu, kdv = offset_of(ki, k, amap)
+                ddu, ddv = kdu - du, kdv - dv
+            poly = np.asarray(k['poly_uv'], float) + [ddu, ddv]   # 子件在这张网格上的位置
             mk = _raster(poly, u0, v0, d.shape, S)
             if k.get('type') in ROTATING:
-                mk |= _disc(k['bbox_uv'], kdu - du, kdv - dv, u0, v0, d.shape, S)
+                mk |= _disc(k['bbox_uv'], ddu, ddv, u0, v0, d.shape, S)
             keep &= cv2.dilate(mk, np.ones((FOREIGN_DILATE, FOREIGN_DILATE), np.uint8)) == 0
         edge = 2 * FOREIGN_DILATE
         keep[:edge] = keep[-edge:] = False
@@ -387,7 +390,9 @@ def run(args):
         th = thresh_of(types, it.get('type'))
         if q is None:
             continue
-        item = {'code': code, 'type': it['type'], 'status': 'ok', 'ncc': None, 'diff_area': None,
+        item = {'code': code, 'type': it['type'], 'status': 'ok',
+                'bbox_xy': list(it['bbox_xy']) if it.get('bbox_xy') else None,
+                'ncc': None, 'diff_area': None,
                 'shift_mm': None, 'shift_vec_mm': None, 'dtheta_deg': None, 'alarms': []}
         if it['found_by'] == 'missing':
             item |= {'status': 'missing', 'alarms': [{'type': 'missing', 'value': 1, 'threshold': 0}]}
@@ -405,7 +410,8 @@ def run(args):
         item['dtheta_deg'] = r['dtheta']
         item['diff_area'] = round(float(r['s'] ** 2 / r['s_amap'] ** 2 - 1), 4)
         if it['found_by'] == 'seg' and it.get('area_px'):
-            ref = float(q['area_px']) * max(r['s_amap'], 1e-6) ** 2
+            # 线阵相机只沿横向按 s_amap 伸缩、纵向不变，因此面积按线性 s_amap 换算
+            ref = float(q['area_px']) * max(r['s_amap'], 1e-6)
             if ref > 0:
                 item['diff_area'] = round(float(it['area_px']) / ref - 1, 4)
         du, dv = offset_of(it, q, amap)

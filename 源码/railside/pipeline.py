@@ -10,6 +10,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,7 +23,7 @@ from . import cli, db, io
 ORDER = ('ingest', 'stitch', 'calib', 'align', 'segment', 'match', 'compare', 'db', 'report')
 NEEDS_WEIGHTS = ('segment',)  # 只有给了 --weights 才跑
 # 另一路在写的步骤：按 <趟> 加可选 --template 调，参数不认就去掉重试。
-TRY_TEMPLATE = ('calib', 'align', 'match', 'compare')
+TRY_TEMPLATE = ('align', 'match', 'compare')
 
 
 def step_argv(step, trip, src=None, weights=None, template=None):
@@ -31,19 +32,21 @@ def step_argv(step, trip, src=None, weights=None, template=None):
         if src is None:
             raise ValueError('ingest 需要原图目录')
         return [str(src), '--trip', trip]
-    if step == 'stitch':
+    if step in ('stitch', 'calib'):
         return [trip]
     if step in TRY_TEMPLATE:
-        return [trip, '--template', str(template or db.latest_template())]
+        tpl = template or db.latest_template()
+        return [trip] + (['--template', str(tpl)] if tpl else [])
     if step == 'segment':
         if not weights:
             raise ValueError('segment 需要 --weights')
         return [trip, '--weights', str(weights)]
     if step == 'db':
-        template = template or db.latest_template()
-        return ['build'] + (['--template', str(template)] if template else [])
+        tpl = template or db.latest_template()
+        return ['build'] + (['--template', str(tpl)] if tpl else [])
     if step == 'report':
-        return [trip]
+        tpl = template or db.latest_template()
+        return [trip] + (['--template', str(tpl)] if tpl else [])
     raise ValueError(f'不认识的步骤：{step}')
 
 
@@ -62,6 +65,8 @@ def available(step):
 def _template(trip, default):
     """使用本次指定的模板，不能让上次运行的 align.json 覆盖它。"""
     ver = default
+    if not ver or not io.is_valid_trip(str(ver)):
+        return ver, None
     tp = io.OUT / '模板' / str(ver) / 'template.json'
     return ver, (io.read_json(tp) if tp.is_file() else None)
 
@@ -109,7 +114,8 @@ def _skip(step, why):
 def _spawn(argv):
     """跑一个子进程：python -m railside.cli <argv>。返回 (rc, stdout, stderr)。测试里 monkeypatch 它。"""
     cmd = [sys.executable, '-m', 'railside.cli', *argv]
-    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1', 'RAILSIDE_ROOT': str(io.ROOT)}
+    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1',
+           'RAILSIDE_ROOT': str(io.ROOT), 'RAILSIDE_DATA': str(io.DATA)}
     p = subprocess.run(cmd, cwd=str(io.ROOT), env=env, capture_output=True, text=True,
                        encoding='utf-8', errors='replace')
     return p.returncode, p.stdout, p.stderr
@@ -184,12 +190,17 @@ def archive_previous(trip):
     backup = d / 'previous_runs' / uuid.uuid4().hex
     backup.mkdir(parents=True)
     for path, name in paths:
-        path.rename(backup / name)
+        shutil.move(str(path), str(backup / name))
     return io.rel(backup)
 
 
-def run_trip(src, trip, weights=None, template=None):
+def run_trip(src, trip, weights=None, template=None, log_fn=None):
     """从原图跑到报告。返回总摘要（dict）。template 不给时取 数据/成品/模板 下最新的。"""
+    io.trip_dir(trip)
+    src_path = Path(src)
+    if not src_path.is_dir():
+        raise FileNotFoundError(f'原图目录不存在：{src_path}')
+    say = _say if log_fn is None else log_fn
     template = template or db.latest_template()
     t0 = time.time()
     previous_run = archive_previous(trip)
@@ -203,7 +214,7 @@ def run_trip(src, trip, weights=None, template=None):
         else:
             why = prereq(step, trip, template)
             r = _skip(step, why) if why else run_step(
-                step, step_argv(step, trip, src=src, weights=weights, template=template))
+                step, step_argv(step, trip, src=src_path, weights=weights, template=template))
         if r['status'] == 'ok' and step == 'ingest':
             verdict = (r.get('summary') or {}).get('verdict')
             if verdict == 'fail':
@@ -211,8 +222,8 @@ def run_trip(src, trip, weights=None, template=None):
                 r['reason'] = '质检结论 fail：' + ('；'.join((r['summary'] or {}).get('reasons') or []) or '见 qc.json')
         steps.append(r)
         _log(trip, r)
-        _say(f"[{i}/{len(ORDER)}] {step}: {r['status']}" + (f"（{r['reason']}）" if r.get('reason') else '')
-             + f" {r['seconds']}s")
+        say(f"[{i}/{len(ORDER)}] {step}: {r['status']}" + (f"（{r['reason']}）" if r.get('reason') else '')
+            + f" {r['seconds']}s")
         if r['status'] == 'failed':
             break
     report = next((s['summary'].get('out') for s in steps if s['step'] == 'report' and s['status'] == 'ok'

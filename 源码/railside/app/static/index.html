@@ -131,7 +131,7 @@
       <section class="pane" id="pane-process">
         <form class="form" id="runForm" autocomplete="off">
           <div class="form-head">从原图目录跑完整条流水线（<code>railside run</code>）：质检 → 拼接 → 对齐 → 识别 → 对比 → 报告。</div>
-          <label>原图目录<input name="src" placeholder="如 D:\数据\ZXB_LC05D（3）\camImg" required></label>
+          <label>原图目录<input name="src" placeholder="如 D:\railside_data\T03\camImg" required></label>
           <label>趟次号<input name="trip" placeholder="如 T03" pattern="[A-Za-z0-9_\-]{1,32}" required></label>
           <label>模板版本<input name="template" value="" placeholder="默认最新" pattern="[A-Za-z0-9_\-]{1,32}"></label>
           <label>分割模型权重（可选）<input name="weights" placeholder=".pt 文件路径；留空使用模板匹配"></label>

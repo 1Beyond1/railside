@@ -175,8 +175,9 @@ def refine_cap(trip, x, y, cap=True, crop=None, y_fix=None, band=None):
     # 圆盖和凸台的验收标准不同：凸台小、边缘糙，只要圆心稳；平盖还要 b/a 能用。
     if cap:
         # 近圆时椭圆倾角没有意义，只有明显偏圆（长短轴差 > 5%）才查倾角。
-        flat = abs(f['a'] - f['b']) / max(f['a'], f['b']) < 0.05
-        f['ok'] = (f['n'] >= 0.6 * len(pts) and f['sd'] <= 8.0
+        m_ab = max(f['a'], f['b'])
+        flat = (abs(f['a'] - f['b']) / m_ab < 0.05) if m_ab > 1e-6 else False
+        f['ok'] = (m_ab > 1e-6 and f['n'] >= 0.6 * len(pts) and f['sd'] <= 8.0
                    and (f['off'] <= 30.0 or flat) and 0.90 < f['ratio'] < 1.12)
     else:
         f['ok'] = f['n'] >= 0.5 * len(pts) and f['sd'] <= 25.0
@@ -229,8 +230,10 @@ def sx_at(calib, x):
     if len(xs) == 1:
         return np.full_like(x, ys[0])
     out = np.interp(x, xs, ys)
-    k0 = (ys[1] - ys[0]) / (xs[1] - xs[0])
-    k1 = (ys[-1] - ys[-2]) / (xs[-1] - xs[-2])
+    dx0 = xs[1] - xs[0]
+    dx1 = xs[-1] - xs[-2]
+    k0 = (ys[1] - ys[0]) / dx0 if abs(dx0) > 1e-12 else 0.0
+    k1 = (ys[-1] - ys[-2]) / dx1 if abs(dx1) > 1e-12 else 0.0
     out = np.where(x < xs[0], ys[0] + (x - xs[0]) * k0, out)
     out = np.where(x > xs[-1], ys[-1] + (x - xs[-1]) * k1, out)
     return out
@@ -251,10 +254,11 @@ def _spread(vals):
     if len(v) == 0:
         return None
     m = float(np.mean(v))
+    denom = m if abs(m) > 1e-12 else 1.0
     return {'n': int(len(v)), 'mean': round(m, 6), 'sd': round(float(np.std(v)), 6),
             'min': round(float(v.min()), 6), 'max': round(float(v.max()), 6),
-            'range_pct': round(float((v.max() - v.min()) / m * 100.0), 3),
-            'sd_pct': round(float(np.std(v) / m * 100.0), 3)}
+            'range_pct': round(float((v.max() - v.min()) / denom * 100.0), 3),
+            'sd_pct': round(float(np.std(v) / denom * 100.0), 3)}
 
 
 # ---------------------------------------------------------------- 命令

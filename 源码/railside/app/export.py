@@ -108,8 +108,8 @@ def export(out, trips=None, max_level=None, log=None):
         '<script src="static/app.js"></script>', '<script src="data/data.js"></script>\n<script src="static/app.js"></script>')
     (out / 'index.html').write_text(html, encoding='utf-8')
     (out / 'static' / 'index.html').unlink()
-    blob = json.dumps({'api': api, 'tiles': tiles, 'trips': names}, ensure_ascii=False, separators=(',', ':'),
-                      default=_json_default)
+    blob = json.dumps({'api': api, 'tiles': tiles, 'trips': names, 'hasOcr': False},
+                      ensure_ascii=False, separators=(',', ':'), default=_json_default)
     _write(out / 'data' / 'data.js', ('window.RS_STATIC = ' + blob + ';\n').encode('utf-8'))
     (out / '使用说明.txt').write_text(
         '双击 index.html，用浏览器（Edge、Chrome、Firefox）打开即可，不用安装任何东西、不用联网。\n'

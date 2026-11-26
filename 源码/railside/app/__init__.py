@@ -12,6 +12,7 @@ def add_parser(sub, step):
 
 
 def run(args):
+    import os
     import sys
 
     if args.export:
@@ -20,12 +21,19 @@ def run(args):
 
     import uvicorn
 
-    from .server import create_app
+    from .server import create_app, is_loopback_host
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except AttributeError:
         pass
     url = f'http://{args.host}:{args.port}/'
+    if not is_loopback_host(args.host):
+        if (os.environ.get('RAILSIDE_APP_TOKEN') or '').strip():
+            print('安全提示：当前监听非回环地址，写操作接口已启用 RAILSIDE_APP_TOKEN 令牌校验。', flush=True)
+        else:
+            print(f'安全警告：当前监听非回环地址（{args.host}）且未配置 RAILSIDE_APP_TOKEN，'
+                  '已自动拒绝所有写操作（/api/run、/api/agent、取消任务）；如需远程触发请先设置 RAILSIDE_APP_TOKEN。',
+                  flush=True)
     print(f'railside 应用已启动：{url}（Ctrl+C 退出）', flush=True)
-    uvicorn.run(create_app(), host=args.host, port=args.port, log_level='warning')
+    uvicorn.run(create_app(host=args.host), host=args.host, port=args.port, log_level='warning')
     return {'step': 'app', 'url': url, 'status': 'stopped'}

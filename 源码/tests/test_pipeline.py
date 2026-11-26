@@ -13,7 +13,9 @@ def ALL(step):
 
 @pytest.fixture
 def proj(tmp_path, monkeypatch):
-    return make_project(tmp_path, monkeypatch)
+    root = make_project(tmp_path, monkeypatch)
+    (root / 'src').mkdir()
+    return root
 
 
 def summaries(calls, extra=None):
@@ -48,8 +50,8 @@ def test_all_steps_in_order(proj, monkeypatch):
     assert out['status'] == 'ok' and out['qc_verdict'] == 'pass'
     assert out['report'] == '数据/成品/报告/T09/index.html'
     assert calls[0] == ['ingest', str(proj / 'src'), '--trip', 'T09']
-    # 入库跟本次流程的模板走（没指定时就是最新的 v1），不再由 db build 自己另取
-    assert calls[-2] == ['db', 'build', '--template', 'v1'] and calls[-1] == ['report', 'T09']
+    # 入库和报告跟本次流程的模板走（没指定时就是最新的 v1），不再由子步骤自己另取
+    assert calls[-2] == ['db', 'build', '--template', 'v1'] and calls[-1] == ['report', 'T09', '--template', 'v1']
     assert out['elapsed_s'] >= 0 and all(s['seconds'] >= 0 for s in out['steps'])
 
 
@@ -81,7 +83,7 @@ def test_missing_module_is_skipped(proj, monkeypatch):
     skipped = {s['step']: s for s in out['steps'] if s['status'] == 'skipped'}
     assert set(skipped) == {'calib', 'align', 'segment', 'match', 'compare'}
     assert '还没实现' in skipped['align']['reason']
-    assert 'report' not in skipped and calls[-1] == ['report', 'T09']
+    assert 'report' not in skipped and calls[-1] == ['report', 'T09', '--template', 'v1']
 
 
 def test_qc_fail_stops_and_reports(proj, monkeypatch):
@@ -117,20 +119,29 @@ def test_failed_step_stops(proj, monkeypatch):
 
 
 def test_template_arg_retried_without(proj, monkeypatch):
+    assert pipeline.step_argv('calib', 'T09') == ['T09']  # calib 不带 --template
     seen = []
     monkeypatch.setattr(pipeline, 'available', ALL)
 
     def _spawn(argv):
         seen.append(list(argv))
         if '--template' in argv:
-            return 2, '', 'railside calib: error: unrecognized arguments: --template v1\n'
-        return 0, json.dumps({'step': argv[0], 'sx_curve': []}) + '\n', ''
+            return 2, '', 'railside align: error: unrecognized arguments: --template v1\n'
+        return 0, json.dumps({'step': argv[0]}) + '\n', ''
 
     monkeypatch.setattr(pipeline, '_spawn', _spawn)
-    r = pipeline.run_step('calib', pipeline.step_argv('calib', 'T09'))
-    assert r['status'] == 'ok' and r['summary']['step'] == 'calib'
-    assert seen == [['calib', 'T09', '--template', 'v1'], ['calib', 'T09']]
+    r = pipeline.run_step('align', pipeline.step_argv('align', 'T09'))
+    assert r['status'] == 'ok' and r['summary']['step'] == 'align'
+    assert seen == [['align', 'T09', '--template', 'v1'], ['align', 'T09']]
     assert r['argv'] == ['T09']
+
+
+def test_step_argv_omits_template_when_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(io, 'OUT', tmp_path / 'empty_out')
+    for step in ('align', 'match', 'compare', 'report'):
+        argv = pipeline.step_argv(step, 'T09')
+        assert '--template' not in argv and 'None' not in argv
+    assert pipeline.step_argv('db', 'T09') == ['build']
 
 
 def test_unrecognized_without_template_is_failed(proj, monkeypatch):
@@ -149,7 +160,7 @@ def test_no_summary_is_noted(proj, monkeypatch):
 
 def test_cli_run_emits_one_summary(proj, monkeypatch, capsys):
     src = proj / 'src'
-    src.mkdir()
+    src.mkdir(exist_ok=True)
     monkeypatch.setattr(pipeline, 'available', ALL)
     monkeypatch.setattr(pipeline, 'prereq', lambda *a, **k: None)
     monkeypatch.setattr(pipeline, '_spawn', summaries([], {'ingest': {'step': 'ingest', 'verdict': 'pass'},
@@ -165,7 +176,7 @@ def test_cli_run_emits_one_summary(proj, monkeypatch, capsys):
 
 def test_cli_run_exits_nonzero_on_qc_fail(proj, monkeypatch, capsys):
     src = proj / 'src'
-    src.mkdir()
+    src.mkdir(exist_ok=True)
     monkeypatch.setattr(pipeline, 'available', ALL)
     monkeypatch.setattr(pipeline, '_spawn', summaries([], {'ingest': {'step': 'ingest', 'verdict': 'fail', 'reasons': ['没找到列车']}}))
     with pytest.raises(SystemExit) as e:

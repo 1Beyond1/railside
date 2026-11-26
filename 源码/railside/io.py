@@ -3,8 +3,12 @@ import datetime
 import functools
 import json
 import os
+import re
 import subprocess
 import sys
+import threading
+import time
+import uuid
 from pathlib import Path
 
 import cv2
@@ -15,6 +19,8 @@ DATA = Path(os.environ['RAILSIDE_DATA']) if os.environ.get('RAILSIDE_DATA') else
 MID = DATA / '中间'
 OUT = DATA / '成品'
 JPEG_MAX = 65500
+TRIP_RE = re.compile(r'^[A-Za-z0-9_-]{1,32}$')
+_replace_lock = threading.Lock()
 
 
 def imread(path, flags=cv2.IMREAD_GRAYSCALE):
@@ -54,14 +60,31 @@ def now():
     return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
 
 
+def _atomic_replace(tmp, dst, retries=8, delay=0.02):
+    """原子替换目标文件；Windows 上短暂占用时做有限次重试。"""
+    with _replace_lock:
+        for attempt in range(retries):
+            try:
+                os.replace(tmp, dst)
+                return
+            except PermissionError:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(delay * (attempt + 1))
+
+
 def write_json(path, obj):
     """写 JSON，自动带 code_ver、created_at。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     obj = {**obj, 'code_ver': code_ver(), 'created_at': now()}
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1, default=_jsonable), encoding='utf-8')
-    os.replace(tmp, path)
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp')
+    try:
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1, default=_jsonable), encoding='utf-8')
+        _atomic_replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return path
 
 
@@ -99,5 +122,27 @@ def rel(path):
         return p.as_posix()
 
 
+def is_valid_trip(trip):
+    """判断趟次号是否合法（1–32 位字母、数字、-、_）。"""
+    return isinstance(trip, str) and bool(TRIP_RE.fullmatch(trip))
+
+
+def validate_trip(trip):
+    """校验趟次号；不合法抛 ValueError。"""
+    if not is_valid_trip(trip):
+        raise ValueError(f'趟次号不合法：{trip!r}（只许 1–32 位字母、数字、- 和 _）')
+    return trip
+
+
 def trip_dir(trip):
-    return MID / trip
+    validate_trip(trip)
+    base = MID.resolve()
+    p = MID / trip
+    rp = p.resolve()
+    try:
+        rp.relative_to(base)
+    except ValueError:
+        raise ValueError(f'趟次路径越界：{trip!r}') from None
+    if rp == base:
+        raise ValueError(f'趟次路径越界：{trip!r}')
+    return p

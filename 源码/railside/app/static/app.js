@@ -41,8 +41,9 @@ const ALARM = {
 };
 const alarmLabel = a => ALARM[a] || a;
 const FOUND = { parent: '父件定位', pixel: '像素匹配', topology: '拓扑补漏', missing: '未找到', template: '模板' };
-const JOB = { running: '运行中', ok: '完成', partial: '部分完成', failed: '失败' };
+const JOB = { running: '运行中', ok: '完成', partial: '部分完成', failed: '失败', cancelled: '已取消' };
 const REV_LABEL = { confirmed: '确认故障', ignored: '误报忽略' };
+const fmtDiffArea = v => (v == null || Number.isNaN(+v)) ? '—' : `${+v >= 0 ? '+' : ''}${fmt(+v * 100, 1)}%`;
 
 const S = {
   trips: [], trip: null, info: null, ov: null, alarms: null, summary: null,
@@ -153,8 +154,8 @@ function syncCmpOverlay() {
   viewer.addHandler(ev, syncOverlay);
   viewerCmp.addHandler(ev, syncCmpOverlay);
 });
-viewer.addHandler('resize', () => { syncOverlay(); if (cmpMode !== 'off') { leader = viewer; follow(viewer); } });
-viewerCmp.addHandler('resize', () => { if (cmpMode !== 'off') { leader = viewer; follow(viewer); } syncCmpOverlay(); });
+viewer.addHandler('resize', () => { syncOverlay(); if (effCmpMode() !== 'off') { leader = viewer; follow(viewer); } });
+viewerCmp.addHandler('resize', () => { if (effCmpMode() !== 'off') { leader = viewer; follow(viewer); } syncCmpOverlay(); });
 
 viewer.addHandler('open', () => {
   if (S.ov?.boxes?.length) focusFirstBogie(true); else jumpCar(1, true);
@@ -215,7 +216,7 @@ function renderOverlay() {
 
 function renderTplOverlay() {
   gTplBox.replaceChildren(); gTplSel.replaceChildren(); S.tplByCode.clear();
-  if (cmpMode !== 'template' || !S.tplOv) return;
+  if (effCmpMode() !== 'template' || !S.tplOv) return;
   const frag = document.createDocumentFragment();
   for (const b of S.tplOv.boxes || []) {
     S.tplByCode.set(b.code, b);
@@ -240,6 +241,10 @@ let cmpMode = 'template', leader = viewer, loadedCmpKey = null;
 
 function canTemplateCmp() {
   return Boolean(S.cmpRef && !S.cmpRef.is_template_trip && S.tplInfo && (!OFF || OFF.tiles[S.tplTrip]));
+}
+
+function effCmpMode() {
+  return (cmpMode === 'template' && !canTemplateCmp()) ? 'raw' : cmpMode;
 }
 
 function interpMap(pts, q, colIn, colOut, clampOut = false) {
@@ -267,7 +272,7 @@ function interpMap(pts, q, colIn, colOut, clampOut = false) {
 }
 
 function mapPoint(pt, fromMain) {
-  if (cmpMode !== 'template') return { x: pt.x, y: pt.y };
+  if (effCmpMode() !== 'template') return { x: pt.x, y: pt.y };
   const pts = S.cmpRef?.map;
   if (!pts || pts.length < 2) {
     const w1 = S.info?.width || 1, w2 = S.tplInfo?.width || 1;
@@ -284,7 +289,7 @@ function mapPoint(pt, fromMain) {
 }
 
 function follow(from) {
-  if (cmpMode === 'off' || from !== leader) return;
+  if (effCmpMode() === 'off' || from !== leader) return;
   const to = from === viewer ? viewerCmp : viewer;
   if (to.world.getItemCount() === 0 || from.world.getItemCount() === 0) return;
   const fromMain = from === viewer;
@@ -333,8 +338,7 @@ function updateCmpUI() {
     ? `上半本趟识别（${S.trip}），下半标准模板（${S.tplTrip} · ${S.cmpRef.template_ver || ''}），按对齐映射联动`
     : (S.cmpRef?.is_template_trip ? '当前浏览的就是标准模板趟' : '缺少标准模板长图');
 
-  let eff = cmpMode;
-  if (eff === 'template' && !hasTpl) eff = 'raw';
+  const eff = effCmpMode();
   wrap.classList.toggle('cmp', eff !== 'off');
   $('#chipTplBox').hidden = eff !== 'template';
   $('#chipXhair').hidden = eff === 'off';
@@ -513,7 +517,7 @@ function bindReadout(el, v, otherV, otherXh, isMain, getInfo, getMap, labelPrefi
       const car = I.cars.find(c => x >= c.x0 && x < c.x1);
       $('#readout').textContent =
         `${tag}  x ${x}  y ${y}   帧 ${Math.floor(x / I.frame_w) + 1} 列 ${x % I.frame_w}   第 ${car?.car ?? '—'} 节   比例 ${ratio}`;
-      if (S.xhairOn && cmpMode !== 'off' && otherV.world.getItemCount() > 0) {
+      if (S.xhairOn && effCmpMode() !== 'off' && otherV.world.getItemCount() > 0) {
         const mapped = mapPoint(p, isMain);
         const sp = otherV.viewport.imageToViewerElementCoordinates(new OpenSeadragon.Point(mapped.x, mapped.y));
         showXhair(otherXh, otherV.container, sp.x, sp.y);
@@ -524,7 +528,7 @@ function bindReadout(el, v, otherV, otherXh, isMain, getInfo, getMap, labelPrefi
     const b = code && (getMap().get(code) || S.byCode.get(code));
     if (b) {
       const wrap = $('#viewerWrap').getBoundingClientRect();
-      const stText = !isMain && cmpMode === 'template' ? '标准模板' : (STATUS[b.status] || '');
+      const stText = !isMain && effCmpMode() === 'template' ? '标准模板' : (STATUS[b.status] || '');
       tip.innerHTML = `<span class="mono">${esc(b.code)}</span> · ${esc(b.type_name || b.type || '')} · ${stText}`;
       tip.style.left = `${Math.min(e.clientX - wrap.left + 14, wrap.width - 240)}px`;
       tip.style.top = `${e.clientY - wrap.top + 14}px`;
@@ -537,9 +541,9 @@ function bindReadout(el, v, otherV, otherXh, isMain, getInfo, getMap, labelPrefi
 bindReadout($('#viewer'), viewer, viewerCmp, xhCmp, true,
   () => S.info, () => S.byCode, () => `[本趟 ${S.trip || ''}]`);
 bindReadout($('#viewerCmp'), viewerCmp, viewer, xhMain, false,
-  () => (cmpMode === 'template' && S.tplInfo ? S.tplInfo : S.info),
-  () => (cmpMode === 'template' ? S.tplByCode : S.byCode),
-  () => (cmpMode === 'template' && S.tplTrip ? `[模板 ${S.tplTrip}]` : `[原图 ${S.trip || ''}]`));
+  () => (effCmpMode() === 'template' && S.tplInfo ? S.tplInfo : S.info),
+  () => (effCmpMode() === 'template' ? S.tplByCode : S.byCode),
+  () => (effCmpMode() === 'template' && S.tplTrip ? `[模板 ${S.tplTrip}]` : `[原图 ${S.trip || ''}]`));
 
 /* ---------------- 车厢导航条 ---------------- */
 
@@ -721,8 +725,8 @@ function metricLine(r) {
   if (m.ncc != null) out.push(`NCC ${fmt(m.ncc, 3)}`);
   if (m.shift_mm != null) out.push(`偏移 ${fmt(m.shift_mm, 1)} mm`);
   if (m.dtheta_deg != null) out.push(`Δθ ${fmt(m.dtheta_deg, 1)}°`);
-  if (m.diff_area != null) out.push(`差异 ${fmt(m.diff_area)} px²`);
-  if (m.area != null) out.push(`面积 ${fmt(m.area)}`);
+  if (m.diff_area != null) out.push(`面积变化 ${fmtDiffArea(m.diff_area)}`);
+  if (m.area != null) out.push(`面积 ${fmt(m.area)} px²`);
   return out.join(' · ');
 }
 
@@ -780,7 +784,7 @@ function renderAlarms() {
     `<button data-f="${esc(t)}" class="${S.filter === t ? 'on' : ''}">${t === 'all' ? '全部' : esc(alarmLabel(t))}<em>${n}</em></button>`).join('');
   const rows = filteredAlarms();
   list.innerHTML = (A.message ? `<div class="note" style="margin:0 0 6px">${esc(A.message)}</div>` : '') + rows.map(r => {
-    const car = carOf(r.xy);
+    const car = r.car ?? carOf(r.xy);
     const rv = getReview(S.trip, r.code);
     const sub = [car ? `第 ${car} 节` : null, metricLine(r) || null, r.rect ? null : '无位置'].filter(Boolean).join(' · ');
     const revTag = rv ? `<span class="tag rev-${rv}">${REV_LABEL[rv]}</span>` : '';
@@ -897,7 +901,7 @@ function markSel() {
     const r = findRow(S.sel);
     if (r?.rect) gSel.append(partEl({ ...r, code: null }, `st-${r.status} sel`));
   }
-  if (cmpMode === 'template') {
+  if (effCmpMode() === 'template') {
     const tel = gTplBox.querySelector(`[data-code="${CSS.escape(S.sel)}"]`);
     if (tel) { tel.classList.add('sel'); gTplBox.appendChild(tel); }
     else {
@@ -988,7 +992,7 @@ const kv = rows => `<dl class="kv">${rows.filter(r => r[1] != null && r[1] !== '
 
 const METRICS = [
   ['ncc', 'NCC（外观相似度）', 3, ['ncc', 'appearance']],
-  ['diff_area', '差异面积 px²', 0, ['diff_area', 'area', 'area_change', 'appearance']],
+  ['diff_area', '面积变化率', 1, ['diff_area', 'area', 'area_change', 'appearance'], fmtDiffArea],
   ['shift_mm', '质心偏移 mm', 2, ['shift', 'shift_mm']],
   ['dtheta_deg', '转角 Δθ °', 2, ['dtheta', 'dtheta_deg', 'rotation']],
 ];
@@ -1008,8 +1012,8 @@ function partDetail(d) {
   h += '<div class="sec-title">对比指标</div>';
   if (c) {
     const al = new Set(r.alarms);
-    h += '<div class="metrics">' + METRICS.map(([k, label, dg, keys]) =>
-      `<div class="metric ${keys.some(x => al.has(x)) ? 'hit' : ''}"><small>${label}</small><b>${fmt(c[k], dg)}</b></div>`).join('') + '</div>';
+    h += '<div class="metrics">' + METRICS.map(([k, label, dg, keys, formatter]) =>
+      `<div class="metric ${keys.some(x => al.has(x)) ? 'hit' : ''}"><small>${label}</small><b>${formatter ? formatter(c[k]) : fmt(c[k], dg)}</b></div>`).join('') + '</div>';
     h += r.alarms.length
       ? `<div class="note">告警：${r.alarms.map(a => `<span class="tag ${a === 'missing' ? 'missing' : 'alarm'}">${esc(alarmLabel(a))}</span>`).join(' ')}</div>`
       : '<div class="note">全部指标在阈值内。</div>';
@@ -1171,13 +1175,14 @@ function renderSummary(sm, err) {
   const pct = boxes.length ? `${fmt(okN / boxes.length * 100, 1)}%` : '—';
   const rAlign = sm.align?.residual_px;
   const medPx = rAlign && typeof rAlign === 'object' ? rAlign.median : rAlign;
-  const sy = sm.calib?.sy_mm_per_px || 0.233;
+  const sx = sm.calib?.sx_median ?? (sm.calib?.sx_min != null && sm.calib?.sx_max != null
+    ? (sm.calib.sx_min + sm.calib.sx_max) / 2 : null);
 
   let h = '<div class="kpi-grid">' +
     `<div class="kpi-card ok"><small>识别零件总数</small><b>${fmt(boxes.length)}</b><span class="sub">正常率 ${pct}</span></div>` +
     `<div class="kpi-card ${alN ? 'warn' : 'ok'}"><small>异常与告警</small><b>${alN}</b><span class="sub">${alN ? `已人工复核 ${rs.done}/${rs.total}` : '全部在阈值内'}</span></div>` +
     `<div class="kpi-card tpl"><small>跨趟对齐精度</small><b>${medPx != null ? `${fmt(medPx, 2)} px` : (S.ov?.template_trip === S.trip ? '基准趟' : '—')}</b>` +
-    `<span class="sub">${medPx != null ? `约 ${fmt(medPx * sy, 2)} mm` : (S.ov?.template_ver ? `模板 ${S.ov.template_ver}` : '未对齐')}</span></div>` +
+    `<span class="sub">${medPx != null ? (sx != null ? `约 ${fmt(medPx * sx, 2)} mm` : '未标定横向比例') : (S.ov?.template_ver ? `模板 ${S.ov.template_ver}` : '未对齐')}</span></div>` +
     `<div class="kpi-card ${sm.qc?.verdict === 'pass' ? 'ok' : ''}">` +
     `<small>图像质检结论</small><b>${sm.qc ? (VERDICT[sm.qc.verdict] || esc(sm.qc.verdict)) : '—'}</b>` +
     `<span class="sub">${sm.qc ? `${fmt(sm.qc.frames)} 帧 · 缺帧 ${sm.qc.missing.length}` : '未运行'}</span></div>` +
@@ -1185,7 +1190,7 @@ function renderSummary(sm, err) {
 
   const carStats = buildCarStats();
   if (carStats.length) {
-    const maxCar = Math.max(1, ...carStats.map(c => c.ok + c.alarm + c.missing));
+    const maxCar = Math.max(1, ...carStats.map(c => c.ok + c.alarm + c.missing + c.foreign));
     h += '<div class="sec-title">分车厢巡检统计（点击跳转）</div><div class="bar-list">';
     for (const c of carStats) {
       const tot = c.ok + c.alarm + c.missing;
@@ -1304,7 +1309,7 @@ function openReport() {
 
   const revByCar = new Map();
   for (const r of al.rows) {
-    const car = carOf(r.xy);
+    const car = r.car ?? carOf(r.xy);
     if (!car) continue;
     const rv = getReview(S.trip, r.code);
     const cur = revByCar.get(car) || { pending: 0, confirmed: 0, ignored: 0 };
@@ -1333,27 +1338,45 @@ function openReport() {
   if (!al.rows.length) {
     h += '<p>本趟全部关键零部件指标均在标准阈值内，无告警记录。</p>';
   } else {
+    const rFig = (src, alt, cap, why) => `<figure>${src ? `<img src="${esc(src)}" alt="${esc(alt)}" data-fallback="${esc(why)}">` : `<div class="noimg">${esc(why)}</div>`}<figcaption>${esc(cap)}</figcaption></figure>`;
     for (const r of al.rows) {
       const rv = getReview(S.trip, r.code);
-      const car = carOf(r.xy);
+      const car = r.car ?? carOf(r.xy);
       const isF = r.kind === 'foreign';
-      const tplSrc = isF
-        ? (OFF ? `data/${enc(S.trip)}/crops/foreign_${r.idx}_template.jpg` : `/api/trips/${enc(S.trip)}/foreign/${r.idx}/crop.jpg?side=template`)
-        : (OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_template.jpg` : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=template`);
-      const tripSrc = isF
-        ? (OFF ? `data/${enc(S.trip)}/crops/foreign_${r.idx}_trip.jpg` : `/api/trips/${enc(S.trip)}/foreign/${r.idx}/crop.jpg?side=trip`)
-        : (OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_trip.jpg` : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=trip`);
+      const hasTpl = isF ? Boolean(r.idx && r.crops?.template) : Boolean(ov.template_trip && r.code);
+      const hasTrip = isF ? Boolean(r.idx && r.crops?.trip) : Boolean(r.xy);
+      const tplSrc = hasTpl
+        ? (isF
+          ? (OFF ? `data/${enc(S.trip)}/crops/foreign_${r.idx}_template.jpg` : `/api/trips/${enc(S.trip)}/foreign/${r.idx}/crop.jpg?side=template`)
+          : (OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_template.jpg` : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=template`))
+        : null;
+      const tripSrc = hasTrip
+        ? (isF
+          ? (OFF ? `data/${enc(S.trip)}/crops/foreign_${r.idx}_trip.jpg` : `/api/trips/${enc(S.trip)}/foreign/${r.idx}/crop.jpg?side=trip`)
+          : (OFF ? `data/${enc(S.trip)}/crops/${enc(r.code)}_trip.jpg` : `/api/trips/${enc(S.trip)}/parts/${enc(r.code)}/crop.jpg?side=trip`))
+        : null;
       h += `<div class="r-alarm"><div class="r-alarm-head">` +
         `<span>${esc(r.code)} · ${esc(r.type_name || r.type || '')}（${car ? `第 ${car} 节` : '—'} · ${r.alarms.map(alarmLabel).join('/')}）</span>` +
         `<span>人工复核：${rv ? REV_LABEL[rv] : '待复核'}</span></div>` +
         `<div style="font-size:12px;color:#5c6b77;margin-bottom:6px">${esc(metricLine(r) || '—')}</div>` +
-        `<div class="r-imgs"><figure><img src="${esc(tplSrc)}" alt="标准模板"><figcaption>标准模板（${esc(ov.template_trip || '')}）</figcaption></figure>` +
-        `<figure><img src="${esc(tripSrc)}" alt="本趟识别"><figcaption>本趟识别（${esc(S.trip)}）</figcaption></figure></div></div>`;
+        `<div class="r-imgs">` +
+        rFig(tplSrc, '标准模板', `标准模板（${ov.template_trip || '—'}）`, '无模板局部图') +
+        rFig(tripSrc, '本趟识别', `本趟识别（${S.trip}）`, r.status === 'missing' ? '未找到（缺失候选）' : '无本趟局部图') +
+        `</div></div>`;
     }
   }
   h += `<div style="margin-top:16px;padding-top:10px;border-top:1px solid #d5dde5;font-size:11.5px;color:#5c6b77">` +
     `说明：本报告由线阵视觉检测系统基于标准模板（${esc(ov.template_ver || '—')} · ${esc(ov.template_trip || '—')}）自动对齐比对生成，最终检修处置结论以人工复核确认意见为准。</div>`;
-  $('#reportBody').innerHTML = h;
+  const rb = $('#reportBody');
+  rb.innerHTML = h;
+  $$('img[data-fallback]', rb).forEach(img => {
+    img.addEventListener('error', () => {
+      const box = document.createElement('div');
+      box.className = 'noimg';
+      box.textContent = img.dataset.fallback || '无局部图';
+      img.replaceWith(box);
+    }, { once: true });
+  });
   $('#reportModal').hidden = false;
 }
 
@@ -1476,7 +1499,6 @@ document.addEventListener('keydown', e => {
 if (OFF) {
   $$('.side-tabs button[data-tab="process"], .side-tabs button[data-tab="chat"], #pane-process, #pane-chat')
     .forEach(el => { el.hidden = true; });
-  fetch('ocr.html', { method: 'HEAD' }).then(r => { if (r.ok) $('#ocrLink').hidden = false; })
-    .catch(() => { $('#ocrLink').hidden = false; });
+  if (OFF.hasOcr) $('#ocrLink').hidden = false;
 }
 loadTrips();

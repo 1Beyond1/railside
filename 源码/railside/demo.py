@@ -616,7 +616,7 @@ def _write_t01_baseline_outputs(t01_manifest, tpl):
             'src_frames': match.frames_of(bxy[0], bxy[2]),
         })
         items.append({
-            'code': q['code'], 'type': q['type'], 'status': 'ok',
+            'code': q['code'], 'type': q['type'], 'status': 'ok', 'bbox_xy': bxy,
             'ncc': 1.0, 'diff_area': 0.0, 'shift_mm': 0.0, 'shift_vec_mm': [0.0, 0.0],
             'dtheta_deg': 0.0, 'alarms': [],
         })

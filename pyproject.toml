@@ -1,16 +1,12 @@
 [project]
 name = "railside"
-version = "0.1.0"
+version = "0.1.1"
 license = "AGPL-3.0-only"
 description = "地铁列车侧面线阵图像视觉检测：拼接、标定、模板车、对齐、零件比对与告警"
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "opencv-python-headless",
-    "scipy",
-    "scikit-image",
-    "matplotlib",
-    "tifffile",
     "fastapi>=0.163.1",
     "uvicorn>=0.54.0",
     "mcp>=2",

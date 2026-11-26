@@ -128,11 +128,19 @@ def _alarms(item):
     return {a['type'] for a in item.get('alarms') or []}
 
 
-def score_compare(truth, cmp, base):
+def score_compare(truth, cmp, base, parts=None):
     if truth is None:
         return {'status': '缺', 'why': '没有 标注/评测/合成缺陷.json，先跑 python -m railside.eval.synth'}
     if cmp is None:
         return {'status': '缺', 'why': f"没有 数据/中间/{truth['trip']}/compare.json，先跑 railside run 合成趟"}
+    if parts is None and io.is_valid_trip(truth.get('trip')):
+        parts = _load(io.trip_dir(truth['trip']) / 'parts.json')
+    part_boxes = {p['code']: p['bbox_xy'] for p in (parts or {}).get('instances') or []
+                  if p.get('code') and p.get('bbox_xy')}
+
+    def box_of(item):
+        return item.get('bbox_xy') or part_boxes.get(item.get('code'))
+
     items = {i['code']: i for i in cmp['items']}
     foreign = cmp.get('foreign') or []
     rows, detail = {}, []
@@ -146,7 +154,8 @@ def score_compare(truth, cmp, base):
             hit = hit_type = bool(fhit)
             # 落在某个子件上的异物，子件告警也算检出（类型不算对）
             for i in cmp['items']:
-                if i.get('bbox_xy') and i.get('status') in ('alarm', 'missing') and _overlap(i['bbox_xy'], d['bbox_xy']):
+                ib = box_of(i)
+                if ib and i.get('status') in ('alarm', 'missing') and _overlap(ib, d['bbox_xy']):
                     hit = True
         else:
             st = (it or {}).get('status')
@@ -165,8 +174,8 @@ def score_compare(truth, cmp, base):
         r['recall_type'] = round(r['hit_type'] / r['n'], 3)
     n = sum(r['n'] for r in rows.values())
     boxes = [d['bbox_xy'] for d in truth['defects']] + [d['part_bbox_xy'] for d in truth['defects']]
-    far = [i for i in cmp['items'] if i.get('status') in ('alarm', 'missing') and i.get('bbox_xy')
-           and not any(_overlap(i['bbox_xy'], b, NEAR_PX) for b in boxes)]
+    far = [i for i in cmp['items'] if i.get('status') in ('alarm', 'missing') and box_of(i)
+           and not any(_overlap(box_of(i), b, NEAR_PX) for b in boxes)]
     far_f = [f for f in foreign if not any(_overlap(f['bbox_xy'], b, NEAR_PX) for b in boxes)]
     out = {'status': 'ok', 'trip': truth['trip'], 'n': n, 'hit': sum(r['hit'] for r in rows.values()),
            'hit_type': sum(r['hit_type'] for r in rows.values()), 'by_kind': rows, 'detail': detail,
@@ -199,7 +208,7 @@ def score_all(synth_trip='T02S', bad_trip='T01B'):
         '分割': {'status': '缺', 'why': '没有训练好的分割权重和 T02 验证标注'},
         '身份': score_identity(_load(mid / 'T02' / 'parts.json')),
         '对比': score_compare(_load(ev / '合成缺陷.json'), _load(mid / synth_trip / 'compare.json'),
-                            _load(mid / 'T02' / 'compare.json')),
+                            _load(mid / 'T02' / 'compare.json'), _load(mid / synth_trip / 'parts.json')),
     }
 
 

@@ -138,9 +138,9 @@ def aligned_region(t_new, amap, u0, u1, v0, v1, step=1):
     xs = amap.u_to_x(us)
     dys = amap.dy_at_x(xs)
     x_lo = int(np.floor(xs.min())) - step
-    x_hi = int(np.ceil(xs.max())) + 2 * step
+    x_hi = max(x_lo + 1, int(np.ceil(xs.max())) + 2 * step)
     y_lo = min(max(0, int(np.floor(vs[0] + dys.min())) - step), H - 1)   # dy = 新趟 y − 模板 v
-    y_hi = min(H, int(np.ceil(vs[-1] + dys.max())) + 2 * step)
+    y_hi = min(H, max(y_lo + 1, int(np.ceil(vs[-1] + dys.max())) + 2 * step))
     src = t_new.region(x_lo, x_hi, y_lo, y_hi, step)
     kx = (x_hi - x_lo) / src.shape[1]
     ky = (y_hi - y_lo) / src.shape[0]
@@ -254,13 +254,20 @@ def run(args):
     seg = io.read_json(seg_p) if seg_p.exists() else None
     t_new = Trip.from_id(trip)
 
-    # 1. 父件：在对齐后的图上估局部平移（模板坐标 px）
+    # 1. 父件：在对齐后的图上估局部平移（模板坐标 px）；第一层没找到时用第三层大窗找回并回写 pfound
     pfound = {}
     for q in tparts:
         if q.get('parent'):
             continue
         crop, mask = _tpl_patch(q)
-        pfound[q['code']] = _search(t_new, amap, crop, mask, q['crop_origin_uv'], (0.0, 0.0), PARENT_REACH)
+        r = _search(t_new, amap, crop, mask, q['crop_origin_uv'], (0.0, 0.0), PARENT_REACH)
+        if not (r and r['score'] >= ACCEPT_TOP):
+            w = max(4.0, (q['bbox_uv'][2] - q['bbox_uv'][0]))
+            h = max(4.0, (q['bbox_uv'][3] - q['bbox_uv'][1]))
+            r3 = _search(t_new, amap, crop, mask, q['crop_origin_uv'], (0.0, 0.0), max(PARENT_MIN, PARENT_FRAC * max(w, h)))
+            if r3 and r3['score'] >= ACCEPT_PARENT:
+                r = r3
+        pfound[q['code']] = r
 
     # 2. 子件：带上父件的平移，小窗口像素匹配；3. 找不到的窗口放大、门槛放低再找一次
     inst = []
@@ -273,16 +280,17 @@ def run(args):
         pr = pfound.get(par) if par else None
         # 父件低分（随机峰）不提供位姿，子件退回整车对齐的预测位置
         off = (pr['du'], pr['dv']) if pr and pr['score'] >= ACCEPT_TOP else (0.0, 0.0)
-        crop, mask = _tpl_patch(q)
-        if par is None:   # 父件用第一层的结果，不再搜
+        if par is None:   # 父件已在第一阶段完成初搜与大窗找回
             r = pfound.get(code)
+            by = 'pixel' if (r and r['score'] >= ACCEPT_TOP) else None
         else:
+            crop, mask = _tpl_patch(q)
             r = _search(t_new, amap, crop, mask, q['crop_origin_uv'], off, max(CHILD_MIN, CHILD_FRAC * max(w, h)))
-        by = 'pixel' if (r and r['score'] >= (ACCEPT_PIXEL if par else ACCEPT_TOP)) else None
-        if by is None:
-            r3 = _search(t_new, amap, crop, mask, q['crop_origin_uv'], off, max(PARENT_MIN, PARENT_FRAC * max(w, h)))
-            if r3 and r3['score'] >= ACCEPT_PARENT:
-                r, by = r3, ('parent' if par else 'pixel')
+            by = 'pixel' if (r and r['score'] >= ACCEPT_PIXEL) else None
+            if by is None:
+                r3 = _search(t_new, amap, crop, mask, q['crop_origin_uv'], off, max(PARENT_MIN, PARENT_FRAC * max(w, h)))
+                if r3 and r3['score'] >= ACCEPT_PARENT:
+                    r, by = r3, 'parent'
         du, dv = (r['du'], r['dv']) if by else off
         item = {'code': code, 'type': q['type'], 'parent': par, 'car': q.get('car'), 'zone': q.get('zone'),
                 'bbox_uv': list(q['bbox_uv']), 'offset_uv': [round(float(du), 2), round(float(dv), 2)]}

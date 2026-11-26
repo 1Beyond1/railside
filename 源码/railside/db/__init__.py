@@ -9,6 +9,8 @@ import json
 import os
 import re
 import sqlite3
+import threading
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +22,7 @@ SCHEMA = Path(__file__).with_name('schema.sql')
 SCHEMA_VER = '1'
 TRIP_FILES = ('trip', 'qc', 'manifest', 'calib', 'align', 'seg', 'parts', 'compare')
 CODE_RE = re.compile(r'^C(\d+)-([A-Z0-9]+)-([A-Za-z0-9_]+)-(\d+)$')
+_db_lock = threading.Lock()
 
 
 # ---------- 路径 ----------
@@ -62,7 +65,7 @@ def discover_trips():
     mid = io.MID
     if not mid.is_dir():
         return []
-    return sorted(p.name for p in mid.iterdir() if (p / 'manifest.json').is_file())
+    return sorted(p.name for p in mid.iterdir() if io.is_valid_trip(p.name) and (p / 'manifest.json').is_file())
 
 
 def resolve_path(p, *bases):
@@ -86,9 +89,9 @@ def load_trip_files(trip):
 
 
 def load_template(ver):
-    if not ver:
+    if not ver or not io.is_valid_trip(str(ver)):
         return None
-    p = template_root() / ver / 'template.json'
+    p = template_root() / str(ver) / 'template.json'
     return io.read_json(p) if p.is_file() else None
 
 
@@ -370,7 +373,7 @@ def build(db_path=None, trips=None, template_ver=None):
     trips = list(trips) if trips else discover_trips()
     tv = norm_ver(template_ver) or latest_template()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = db_path.with_name(db_path.name + '.tmp')
+    tmp = db_path.with_name(f'{db_path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp')
     tmp.unlink(missing_ok=True)
     con = sqlite3.connect(tmp)
     try:
@@ -389,9 +392,18 @@ def build(db_path=None, trips=None, template_ver=None):
         con.commit()
         tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
         counts = {t: con.execute(f'SELECT count(*) FROM {t}').fetchone()[0] for t in tables}
-    finally:
+    except BaseException:
         con.close()
-    os.replace(tmp, db_path)
+        tmp.unlink(missing_ok=True)
+        raise
+    else:
+        con.close()
+    try:
+        with _db_lock:
+            io._atomic_replace(tmp, db_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return {'step': 'db', 'db': rel(db_path), 'template_ver': tv, 'trips': trips, 'rows': counts, 'skipped': b.skipped}
 
 
@@ -401,17 +413,19 @@ def append_agent_log(trip, step, tool, args, result, status, db_path=None):
            'status': status, 'code_ver': io.code_ver()}
     p = io.trip_dir(trip) / 'agent_log.jsonl'
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, 'a', encoding='utf-8') as f:
-        f.write(json.dumps(rec, ensure_ascii=False, default=io._jsonable) + '\n')
-    db_path = Path(db_path) if db_path else default_db()
-    if db_path.is_file():
-        rec_db = json.loads(json.dumps(rec, ensure_ascii=False, default=io._jsonable))
-        con = sqlite3.connect(db_path)
-        try:
-            with con:
-                _insert_log(con, rec_db, 'file:' + rel(p))
-        finally:
-            con.close()
+    line = json.dumps(rec, ensure_ascii=False, default=io._jsonable) + '\n'
+    with _db_lock:
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(line)
+        db_path = Path(db_path) if db_path else default_db()
+        if db_path.is_file():
+            rec_db = json.loads(line)
+            con = sqlite3.connect(db_path, timeout=10.0)
+            try:
+                with con:
+                    _insert_log(con, rec_db, 'file:' + rel(p))
+            finally:
+                con.close()
     return rec
 
 

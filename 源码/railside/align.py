@@ -64,7 +64,11 @@ def dense(t_new, t_tpl, x1s, pred):
         x2p = int(round(pred(x1)))
         tp = t_tpl.region(x1 - h, x1 + h, *BAND, step=4).astype(np.float32)
         reg = t_new.region(x2p - h - REACH, x2p + h + REACH, BAND[0] - 40, BAND[1] + 40, step=4).astype(np.float32)
+        if np.ptp(tp) <= 1e-6 or np.ptp(reg) <= 1e-6:
+            out.append((x1, float(x2p), 0.0, -1.0))
+            continue
         r = cv2.matchTemplate(reg, tp, cv2.TM_CCOEFF_NORMED)
+        r = np.where(np.isfinite(r), r, -1.0)
         _, v, _, (bx, by) = cv2.minMaxLoc(r)
         xc = x2p - h - REACH + bx * 4
         dyc = by * 4 - 40
@@ -72,7 +76,11 @@ def dense(t_new, t_tpl, x1s, pred):
         k = 6
         tp1 = t_tpl.region(x1 - h, x1 + h, *BAND)[::4].astype(np.float32)
         reg1 = t_new.region(xc - k, xc + BLOCK + k, BAND[0] + dyc, BAND[1] + dyc)[::4].astype(np.float32)
+        if np.ptp(tp1) <= 1e-6 or np.ptp(reg1) <= 1e-6:
+            out.append((x1, float(x2p), float(dyc), -1.0))
+            continue
         r1 = cv2.matchTemplate(reg1, tp1, cv2.TM_CCOEFF_NORMED)[0]
+        r1 = np.where(np.isfinite(r1), r1, -1.0)
         b1 = int(r1.argmax())
         sub = anc._parabola(r1[b1 - 1:b1 + 2]) if 0 < b1 < len(r1) - 1 else 0.0
         x2 = xc - k + b1 + sub + h
@@ -80,20 +88,25 @@ def dense(t_new, t_tpl, x1s, pred):
     return out
 
 
-def refine(t_new, t_tpl, x1s, amap, head_t, dys, reach=40):
+def refine(t_new, t_tpl, x1s, amap, head_t, dys=None, reach=40):
     """第二遍：按第一遍映射的局部比例缩放模板块，再在 ±reach 内精配。消除比例变化带来的偏差。"""
     h = BLOCK // 2
     out = []
-    for x1, dy in zip(x1s, dys):
+    for i, x1 in enumerate(x1s):
         u = x1 - head_t
         s = float(amap.scale_at_u(u))
         x2p = float(amap.u_to_x(u))
-        w2 = int(round(BLOCK * s))
+        dy = float(amap.dy_at_x(x2p)) if dys is None else float(dys[i])
+        w2 = max(16, int(round(BLOCK * s)))
         tp = t_tpl.region(x1 - h, x1 + h, *BAND)[::4].astype(np.float32)
         tp = cv2.resize(tp, (w2, tp.shape[0]), interpolation=cv2.INTER_LINEAR)
         r0 = int(round(x2p - w2 / 2)) - reach
-        reg = t_new.region(r0, r0 + w2 + 2 * reach, BAND[0] + int(dy), BAND[1] + int(dy))[::4].astype(np.float32)
+        reg = t_new.region(r0, r0 + w2 + 2 * reach, BAND[0] + int(round(dy)), BAND[1] + int(round(dy)))[::4].astype(np.float32)
+        if np.ptp(tp) <= 1e-6 or np.ptp(reg) <= 1e-6:
+            out.append((x1, float(x2p), float(dy), -1.0))
+            continue
         r = cv2.matchTemplate(reg, tp, cv2.TM_CCOEFF_NORMED)[0]
+        r = np.where(np.isfinite(r), r, -1.0)
         b = int(r.argmax())
         sub = anc._parabola(r[b - 1:b + 2]) if 0 < b < len(r) - 1 else 0.0
         out.append((x1, r0 + b + sub + w2 / 2, float(dy), float(r[b])))
@@ -104,9 +117,11 @@ def robust_fit(x1, x2, w=9, tol=12.0):
     """偏移 o = x2 − x1 做滑动中值；离群点（偏离中值 > tol px）去掉。返回保留的下标。"""
     x1, x2 = np.asarray(x1, float), np.asarray(x2, float)
     o = x2 - x1
-    keep = np.ones(len(o), bool)
+    keep = np.isfinite(x1) & np.isfinite(x2)
     for _ in range(2):
         idx = np.where(keep)[0]
+        if len(idx) == 0:
+            return keep
         med = np.array([np.median(o[idx[max(0, i - w // 2): i + w // 2 + 1]]) for i in range(len(idx))])
         bad = np.abs(o[idx] - med) > tol
         keep[idx[bad]] = False
@@ -146,20 +161,28 @@ def run(args):
     bx2 = np.array([b[1] for b in blocks], float)
     bdy = np.array([b[2] for b in blocks], float)
     bncc = np.array([b[3] for b in blocks], float)
-    use = bncc > 0.5
+    use = np.isfinite(bncc) & np.isfinite(bx2) & np.isfinite(bdy) & (bncc > 0.5)
     keep = np.zeros(len(blocks), bool)
-    ki = robust_fit(bx1[use], bx2[use])
-    keep[np.where(use)[0][ki]] = True
+    if int(use.sum()) >= 2:
+        ki = robust_fit(bx1[use], bx2[use])
+        keep[np.where(use)[0][ki]] = True
+    if int(keep.sum()) < 2:
+        raise SystemExit(f'对齐第一遍有效加密块不足（仅 {int(keep.sum())} 块，至少需要 2 块），无法拟合映射')
     amap1 = AlignMap(bx2[keep], bx1[keep] - head_t, bdy[keep])
-    # 第二遍
-    blocks = refine(t_new, t_tpl, x1s, amap1, head_t, bdy)
+    # 第二遍：使用第一遍稳健拟合后的纵向偏移 amap1.dy_at_x，避免离群块 dy 污染精配
+    dys2 = amap1.dy_at_x(amap1.u_to_x(bx1 - head_t))
+    blocks = refine(t_new, t_tpl, x1s, amap1, head_t, dys2)
     bx2 = np.array([b[1] for b in blocks], float)
+    bdy2 = np.array([b[2] for b in blocks], float)
     bncc = np.array([b[3] for b in blocks], float)
-    use = bncc > 0.6
+    use = np.isfinite(bncc) & np.isfinite(bx2) & np.isfinite(bdy2) & (bncc > 0.6)
     keep = np.zeros(len(blocks), bool)
-    ki = robust_fit(bx1[use], bx2[use], w=7, tol=8.0)
-    keep[np.where(use)[0][ki]] = True
-    amap = AlignMap(bx2[keep], bx1[keep] - head_t, bdy[keep])
+    if int(use.sum()) >= 2:
+        ki = robust_fit(bx1[use], bx2[use], w=7, tol=8.0)
+        keep[np.where(use)[0][ki]] = True
+    if int(keep.sum()) < 2:
+        raise SystemExit(f'对齐第二遍有效加密块不足（仅 {int(keep.sum())} 块，至少需要 2 块），无法拟合映射')
+    amap = AlignMap(bx2[keep], bx1[keep] - head_t, bdy2[keep])
 
     # 残差：用加密块建的映射去预测各定位靶（靶没参与建映射）
     res = np.array([amap.x_to_u(a['x']) - a['u'] for a in good])

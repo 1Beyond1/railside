@@ -16,7 +16,7 @@ from .. import io
 from ..coords import AlignMap, H, display_x
 from . import dzi
 
-TRIP_RE = re.compile(r'^[A-Za-z0-9_-]{1,32}$')
+TRIP_RE = io.TRIP_RE
 
 # 流水线各步的输出文件（概况面板的“文件”一栏）
 PIPE_FILES = [
@@ -350,7 +350,13 @@ def alarms(trip):
     tpl_ok = bool(ctx.tpl and ctx.tpl.get('trip') and (io.trip_dir(ctx.tpl['trip']) / 'manifest.json').exists())
     for i, f in enumerate((ctx.cmp or {}).get('foreign') or [], 1):
         uv = f.get('bbox_uv')
-        xy = ctx.uv_to_xy(uv) if uv and (ctx.is_tpl_trip or ctx.amap) else None
+        bxy = f.get('bbox_xy')
+        if bxy and len(bxy) == 4:
+            xy = [float(v) for v in bxy]
+        elif uv and (ctx.is_tpl_trip or ctx.amap):
+            xy = ctx.uv_to_xy(uv)
+        else:
+            xy = None
         rows.append({'code': f'异物-{i:02d}', 'idx': i, 'kind': 'foreign', 'type': 'FOREIGN', 'type_name': '异物', 'parent': None,
                      'status': 'alarm', 'alarms': ['foreign'], 'xy': xy, 'rect': ctx.rect(xy) if xy else None,
                      'crops': {'template': bool(uv and tpl_ok), 'trip': xy is not None},
@@ -437,6 +443,13 @@ def _rows_from_history(res):
     return rows
 
 
+def _trip_mtime_ns(trip):
+    try:
+        return (io.trip_dir(trip) / 'trip.json').stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
 def crop(trip, code, side):
     """零件局部图 JPEG（翻转显示，框出零件）。side = template | trip。"""
     ctx = Context(trip)
@@ -453,7 +466,8 @@ def crop(trip, code, side):
     else:
         raise BadRequest(f'side 只能是 template 或 trip：{side}')
     check_trip(src_trip)
-    return _crop(str(io.trip_dir(src_trip)), src_trip, tuple(int(round(v)) for v in xy), color)
+    return _crop(str(io.trip_dir(src_trip)), _trip_mtime_ns(src_trip), src_trip,
+                 tuple(int(round(v)) for v in xy), color)
 
 
 def foreign_crop(trip, idx, side):
@@ -462,34 +476,48 @@ def foreign_crop(trip, idx, side):
     items = (ctx.cmp or {}).get('foreign') or []
     if idx < 1 or idx > len(items):
         raise NotFound(f'{trip} 没有异物-{idx:02d}')
-    uv = items[idx - 1].get('bbox_uv')
-    if not uv:
-        raise NotFound(f'{trip} 的异物-{idx:02d} 没有位置')
+    f = items[idx - 1]
+    uv = f.get('bbox_uv')
+    bxy = f.get('bbox_xy')
     if side == 'template':
+        if not uv:
+            raise NotFound(f'{trip} 的异物-{idx:02d} 没有模板位置')
         if not ctx.tpl or not ctx.tpl.get('trip'):
             raise NotFound('没有对应的标准模板')
         src_trip, xy, color = ctx.tpl['trip'], ctx.uv_to_xy(uv, tpl_trip=True), TEMPLATE_COLOR
     elif side == 'trip':
-        xy = ctx.uv_to_xy(uv)
+        if bxy and len(bxy) == 4:
+            xy = [float(v) for v in bxy]
+        elif uv:
+            xy = ctx.uv_to_xy(uv)
+        else:
+            xy = None
         if xy is None:
             raise NotFound(f'{trip} 的异物-{idx:02d} 无法映射到本趟坐标')
         src_trip, color = trip, STATUS_COLOR['alarm']
     else:
         raise BadRequest(f'side 只能是 template 或 trip：{side}')
     check_trip(src_trip)
-    return _crop(str(io.trip_dir(src_trip)), src_trip, tuple(int(round(v)) for v in xy), color)
+    return _crop(str(io.trip_dir(src_trip)), _trip_mtime_ns(src_trip), src_trip,
+                 tuple(int(round(v)) for v in xy), color)
 
 
 @functools.lru_cache(maxsize=256)
-def _crop(_trip_dir, trip, xy, color, max_side=560):
+def _crop(_trip_dir, _trip_mtime, trip, xy, color, max_side=560):
     bx0, by0, bx1, by1 = xy
+    bx0, bx1 = min(bx0, bx1), max(bx0, bx1)
+    by0, by1 = min(by0, by1), max(by0, by1)
     bw, bh = max(bx1 - bx0, 1), max(by1 - by0, 1)
     pad = max(48, int(0.6 * max(bw, bh)))
     t = dzi.reader(trip)
     cx0, cx1 = max(0, bx0 - pad), min(t.width, bx1 + pad)
     cy0, cy1 = max(0, by0 - pad), min(H, by1 + pad)
+    if cx1 <= cx0 or cy1 <= cy0:
+        raise NotFound(f'{trip} 的局部框超出图像范围：{xy}')
     step = max(1, math.ceil(max(cx1 - cx0, cy1 - cy0) / max_side))
     im = t.region(cx0, cx1, cy0, cy1, step=step)[:, ::-1]
+    if im.size == 0:
+        raise NotFound(f'{trip} 的局部图为空：{xy}')
     im = cv2.cvtColor(np.ascontiguousarray(im), cv2.COLOR_GRAY2BGR)
     # 翻转后：显示列 k ↔ 趟坐标 x = cx1 - 1 - k*step
     p0 = (int((cx1 - bx1) / step), int((by0 - cy0) / step))
@@ -525,6 +553,7 @@ def summary(trip):
         sx = [p.get('mm_per_px') for p in calib.get('sx_curve') or [] if p.get('mm_per_px') is not None]
         out['calib'] = {'source': calib.get('source'), 'n_refs': len(calib.get('refs') or []),
                         'sx_min': min(sx) if sx else None, 'sx_max': max(sx) if sx else None,
+                        'sx_median': float(np.median(sx)) if sx else None,
                         'sy_mm_per_px': calib.get('sy_mm_per_px')}
     if align:
         out['align'] = {'template_ver': align.get('template_ver'), 'n_anchors': len(align.get('anchors') or []),

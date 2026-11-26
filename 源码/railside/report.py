@@ -158,7 +158,8 @@ def _alarm_entries(cmp_, parts_by_code, tpl_by_code):
     groups = {}
     for a in alarms_from_compare(cmp_):
         key = ('item', a['item']) if a['item'] is not None else ('foreign', len(groups))
-        g = groups.setdefault(key, {'code': a['code'], 'alarms': [], 'bbox_uv': a['bbox_uv']})
+        bxy = (a.get('detail') or {}).get('bbox_xy')
+        g = groups.setdefault(key, {'code': a['code'], 'alarms': [], 'bbox_uv': a['bbox_uv'], 'bbox_xy': bxy})
         g['alarms'].append(a)
     items = cmp_.get('items') or []
     out = []
@@ -173,9 +174,22 @@ def _alarm_entries(cmp_, parts_by_code, tpl_by_code):
 
 
 def write_report(trip, out_dir=None, template_ver=None):
-    out = Path(out_dir) if out_dir else io.OUT / '报告' / trip
+    io.validate_trip(trip)
+    if out_dir:
+        out = Path(out_dir)
+    else:
+        rep_root = (io.OUT / '报告').resolve()
+        out = io.OUT / '报告' / trip
+        try:
+            out.resolve().relative_to(rep_root)
+        except ValueError:
+            raise ValueError(f'报告路径越界：{trip!r}') from None
+        if out.resolve() == rep_root:
+            raise ValueError(f'报告路径越界：{trip!r}')
     img = out / 'img'
     if img.exists():
+        if img.is_symlink() or img.resolve().parent != out.resolve():
+            raise ValueError(f'拒绝清理越界或符号链接目录：{img}')
         shutil.rmtree(img)
     img.mkdir(parents=True)
     js = load_trip_files(trip)
@@ -281,7 +295,12 @@ def write_report(trip, out_dir=None, template_ver=None):
         tdir_t = template_root() / tv if tv else None
         for n, e in enumerate(entries, 1):
             part, tp = e['part'] or {}, e['tpl'] or {}
-            bxy, how = (box4(part['bbox_xy']), 'parts') if part.get('bbox_xy') else uv_to_xy(e['bbox_uv'])
+            if part.get('bbox_xy'):
+                bxy, how = box4(part['bbox_xy']), 'parts'
+            elif e.get('bbox_xy') and len(e['bbox_xy']) == 4:
+                bxy, how = box4(e['bbox_xy']), 'compare'
+            else:
+                bxy, how = uv_to_xy(e['bbox_uv'])
             if bxy is not None:
                 marks.append((n, bxy))
             # 模板局部图

@@ -5,11 +5,15 @@
 import json
 import re
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 
 from . import io
 from .db import _path_arg, default_db, rel
+
+SQL_TIMEOUT_S = 5.0
+SQL_MAX_ROWS = 5000
 
 
 def connect(db_path=None):
@@ -73,8 +77,8 @@ def part_history(code, trip=None, db_path=None):
         comps = _all(con, cq, (code, trip) if trip else (code,))
         aq = 'SELECT * FROM alarm WHERE code = ?' + (' AND trip_id = ?' if trip else '') + ' ORDER BY trip_id, id'
         alarm_rows = _all(con, aq, (code, trip) if trip else (code,))
-        types = {r['type'] for r in tpl} | {r['type'] for r in trips}
-        ptype = _all(con, f'SELECT * FROM part_type WHERE type IN ({",".join("?" * len(types))})', sorted(t for t in types if t)) if types else []
+        types = sorted({r['type'] for r in tpl if r['type']} | {r['type'] for r in trips if r['type']})
+        ptype = _all(con, f'SELECT * FROM part_type WHERE type IN ({",".join("?" * len(types))})', types) if types else []
         by_trip = {}
         for r in trips:
             by_trip.setdefault(r['trip_id'], {'instances': [], 'comparisons': [], 'alarms': []})['instances'].append(r)
@@ -104,17 +108,38 @@ def alarms(trip=None, type=None, db_path=None):
 _READ_ONLY = re.compile(r'^\s*(select|with)\b', re.I)
 
 
-def sql(query, db_path=None):
+def sql(query, db_path=None, timeout_s=SQL_TIMEOUT_S, max_rows=SQL_MAX_ROWS):
     """只读 SQL：只许 SELECT / WITH 开头的单条语句；库以只读方式打开，写操作会被 SQLite 拒绝。"""
     if not _READ_ONLY.match(query):
         raise ValueError('只许 SELECT 或 WITH 开头的查询')
     with closing(connect(db_path)) as con:
+        deadline = (time.monotonic() + float(timeout_s)) if timeout_s else None
+        if deadline is not None:
+            con.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
         try:
             cur = con.execute(query)
-        except (sqlite3.OperationalError, sqlite3.ProgrammingError) as e:
+            cols = [c[0] for c in cur.description or []]
+            if max_rows is not None:
+                limit = int(max_rows)
+                raw = cur.fetchmany(limit + 1)
+                truncated = len(raw) > limit
+                rows = [list(r) for r in raw[:limit]]
+            else:
+                truncated = False
+                rows = [list(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError as e:
+            if 'interrupted' in str(e).lower():
+                raise ValueError(f'查询超时（>{timeout_s}s）已被中止') from e
             raise ValueError(f'查询被拒绝或出错: {e}') from e
-        cols = [c[0] for c in cur.description or []]
-        return {'columns': cols, 'rows': [list(r) for r in cur.fetchall()]}
+        except sqlite3.ProgrammingError as e:
+            raise ValueError(f'查询被拒绝或出错: {e}') from e
+        finally:
+            if deadline is not None:
+                con.set_progress_handler(None, 0)
+        out = {'columns': cols, 'rows': rows}
+        if truncated:
+            out['truncated'] = True
+        return out
 
 
 def add_parser(sub, step):
